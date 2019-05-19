@@ -9,11 +9,20 @@ OSX
 2. Extract
 
 3. Add ENV variables:
-export VULKAN_SDK=/Users/hernan/Development/bin/vulkansdk-macos-1.1.101.0
-export VK_ICD_FILENAMES=$VULKAN_SDK/macOS/etc/vulkan/icd.d/MoltenVK_icd.json
-export VK_LAYER_PATH=$VULKAN_SDK/macOS/etc/vulkan/explicit_layer.d
+export VULKAN_SDK=/PATH/TO/VULKANSDK/macOS
+export VK_ICD_FILENAMES=$VULKAN_SDK/etc/vulkan/icd.d/MoltenVK_icd.json
+export VK_LAYER_PATH=$VULKAN_SDK/etc/vulkan/explicit_layer.d
 
 4. CMake
 
 5. Build & Run :)
+
+Troubleshooting
+===============
+
+When generating Xcode projects using CMake, it might be required to add
+
+1. Product -> Scheme -> Edit Scheme
+2. Declare VK_ICD_FILENAMES and VK_LAYER_PATH environmental variables using full paths to files/directories
+3. Build and run
 

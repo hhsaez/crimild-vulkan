@@ -81,7 +81,9 @@ namespace crimild {
 				setupDebugMessenger();
 				createSurface();
 				pickPhysicalDevice();
-				createLogicalDevice();			   
+				createLogicalDevice();
+				createSwapChain();
+				createImageViews();
 			}
 
 			void createInstance( void )
@@ -98,8 +100,8 @@ namespace crimild {
 					.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
 					.pApplicationName = "Triangle",
 					.applicationVersion = VK_MAKE_VERSION( 1, 0, 0 ),
-					.pEngineName = "No Engine",
-					.engineVersion = VK_MAKE_VERSION( 1, 0, 0 ),//CRIMILD_VERSION_MAJOR, CRIMILD_VERSION_MINOR, CRIMILD_VERSION_PATCH ),
+					.pEngineName = "Crimild",
+					.engineVersion = VK_MAKE_VERSION( CRIMILD_VERSION_MAJOR, CRIMILD_VERSION_MINOR, CRIMILD_VERSION_PATCH ),
 					.apiVersion = VK_API_VERSION_1_0,
 				};
 				
@@ -235,7 +237,14 @@ namespace crimild {
 			{
 				auto indices = findQueueFamilies( device );
 				auto extensionsSupported = checkDeviceExtensionSupport( device );
-				return indices.isComplete() && extensionsSupported;
+
+				auto swapChainAdequate = false;
+				if ( extensionsSupported ) {
+					auto swapChainSupport = querySwapChainSupport( device );
+					swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
+				}
+				
+				return indices.isComplete() && extensionsSupported && swapChainAdequate;
 			}
 
 			/**
@@ -480,6 +489,208 @@ namespace crimild {
 			//@}
 
 			/**
+			   \name SwapChain 
+			*/
+			//@{
+		private:
+			struct SwapChainSupportDetails {
+				VkSurfaceCapabilitiesKHR capabilities;
+				std::vector< VkSurfaceFormatKHR > formats;
+				std::vector< VkPresentModeKHR > presentModes;
+			};
+
+			SwapChainSupportDetails querySwapChainSupport( VkPhysicalDevice device ) const noexcept				
+			{
+				SwapChainSupportDetails details;
+
+				vkGetPhysicalDeviceSurfaceCapabilitiesKHR( device, _surface, &details.capabilities );
+
+				crimild::UInt32 formatCount;
+				vkGetPhysicalDeviceSurfaceFormatsKHR( device, _surface, &formatCount, nullptr );
+				if ( formatCount > 0 ) {
+					details.formats.resize( formatCount );
+					vkGetPhysicalDeviceSurfaceFormatsKHR( device, _surface, &formatCount, details.formats.data() );
+				}
+
+				crimild::UInt32 presentModeCount;
+				vkGetPhysicalDeviceSurfacePresentModesKHR( device, _surface, &presentModeCount, nullptr );
+				if ( presentModeCount > 0 ) {
+					details.presentModes.resize( presentModeCount );
+					vkGetPhysicalDeviceSurfacePresentModesKHR( device, _surface, &presentModeCount, details.presentModes.data() );
+				}
+				
+				return details;
+			}
+
+			VkSurfaceFormatKHR chooseSwapSurfaceFormat( const std::vector< VkSurfaceFormatKHR > &availableFormats ) const noexcept
+			{
+				if ( availableFormats.size() == 1 && availableFormats[ 0 ].format == VK_FORMAT_UNDEFINED ) {
+					return {
+						VK_FORMAT_B8G8R8A8_UNORM,
+						VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+					};
+				}
+
+				for ( const auto &availableFormat : availableFormats ) {
+					if ( availableFormat.format == VK_FORMAT_B8G8R8A8_UNORM && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ) {
+						return availableFormat;
+					}
+				}
+
+				return availableFormats[ 0 ];
+			}
+
+			VkPresentModeKHR chooseSwapPresentMode( const std::vector< VkPresentModeKHR > &availablePresentModes ) const noexcept
+			{
+				VkPresentModeKHR bestMode = VK_PRESENT_MODE_FIFO_KHR;
+				
+				for ( const auto &availablePresentMode : availablePresentModes ) {
+					if ( availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR ) {
+						// Triple buffer
+						return availablePresentMode;
+					}
+					else if ( availablePresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ) {
+						// Double buffer
+						bestMode = availablePresentMode;
+					}
+				}
+				
+				return bestMode;
+			}
+
+			VkExtent2D chooseSwapExtent( const VkSurfaceCapabilitiesKHR capabilities )
+			{
+				if ( capabilities.currentExtent.width != std::numeric_limits< uint32_t >::max() ) {
+					return capabilities.currentExtent;
+				}
+
+				VkExtent2D actualExtent = {
+					_width,
+					_height,
+				};
+
+				actualExtent.width = std::max(
+					capabilities.minImageExtent.width,
+					std::min( capabilities.maxImageExtent.width, actualExtent.width )
+				);
+				actualExtent.height = std::max(
+					capabilities.minImageExtent.height,
+					std::min( capabilities.maxImageExtent.height, actualExtent.height )
+				);
+
+				return actualExtent;
+			}
+
+			void createSwapChain( void )
+			{
+				CRIMILD_LOG_DEBUG( "Creating swapchain" );
+				
+				auto swapChainSupport = querySwapChainSupport( _physicalDevice );
+				auto surfaceFormat = chooseSwapSurfaceFormat( swapChainSupport.formats );
+				auto presentMode = chooseSwapPresentMode( swapChainSupport.presentModes );
+				auto extent = chooseSwapExtent( swapChainSupport.capabilities );
+
+				auto imageCount = swapChainSupport.capabilities.minImageCount + 1;
+				if ( swapChainSupport.capabilities.maxImageCount > 0 ) {
+					imageCount = std::min(
+						swapChainSupport.capabilities.maxImageCount,
+						imageCount
+					);
+				}
+
+				auto createInfo = VkSwapchainCreateInfoKHR {
+					.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+					.surface = _surface,
+					.minImageCount = imageCount,
+					.imageFormat = surfaceFormat.format,
+					.imageColorSpace = surfaceFormat.colorSpace,
+					.imageExtent = extent,
+					.imageArrayLayers = 1,
+					.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+				};
+
+				auto indices = findQueueFamilies( _physicalDevice );
+				uint32_t queueFamilyIndices[] = {
+					indices.graphicsFamily[ 0 ],
+					indices.presentFamily[ 0 ],
+				};
+
+				if ( indices.graphicsFamily != indices.presentFamily ) {
+					createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+					createInfo.queueFamilyIndexCount = 2;
+					createInfo.pQueueFamilyIndices = queueFamilyIndices;
+				}
+				else {
+					createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+					createInfo.queueFamilyIndexCount = 0;
+					createInfo.pQueueFamilyIndices = nullptr;
+				}
+
+				createInfo.preTransform = swapChainSupport.capabilities.currentTransform;
+				createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+				createInfo.presentMode = presentMode;
+				createInfo.clipped = VK_TRUE;
+				createInfo.oldSwapchain = VK_NULL_HANDLE;
+
+				if ( vkCreateSwapchainKHR( m_device, &createInfo, nullptr, &m_swapChain ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create swapchain" );
+				}
+
+				vkGetSwapchainImagesKHR( m_device, m_swapChain, &imageCount, nullptr );
+				m_swapChainImages.resize( imageCount );
+				vkGetSwapchainImagesKHR( m_device, m_swapChain, &imageCount, m_swapChainImages.data() );
+
+				m_swapChainImageFormat = surfaceFormat.format;
+				m_swapChainExtent = extent;
+			}
+
+		private:
+			VkSwapchainKHR m_swapChain;
+			std::vector< VkImage > m_swapChainImages;
+			VkFormat m_swapChainImageFormat;
+			VkExtent2D m_swapChainExtent;
+
+			//@}
+
+			/**
+			   \name Image views
+			*/
+			//@{
+
+		public:
+			void createImageViews( void )
+			{
+				m_swapChainImageViews.resize( m_swapChainImages.size() );
+				
+				for ( auto i = 0l; i < m_swapChainImages.size(); ++i ) {
+					auto createInfo = VkImageViewCreateInfo {
+						.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+						.image = m_swapChainImages[ i ],
+						.viewType = VK_IMAGE_VIEW_TYPE_2D,
+						.format = m_swapChainImageFormat,
+						.components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+						.components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+						.components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+						.components.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+						.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.subresourceRange.baseMipLevel = 0,
+						.subresourceRange.levelCount = 1,
+						.subresourceRange.baseArrayLayer = 0,
+						.subresourceRange.layerCount = 1,
+					};
+
+					if ( vkCreateImageView( m_device, &createInfo, nullptr, &m_swapChainImageViews[ i ] ) != VK_SUCCESS ) {
+						throw RuntimeException( "Failed to create image views" );
+					}
+				}
+			}
+
+		private:
+			std::vector< VkImageView > m_swapChainImageViews;
+
+			//@}
+
+			/**
 			   \name Cleanup
 			*/
 			//@{
@@ -487,6 +698,14 @@ namespace crimild {
 		private:
 			void cleanup( void )
 			{
+				// TODO: The order of these calls is causing a SEGFAULT
+				
+				for ( auto imageView : m_swapChainImageViews ) {
+					vkDestroyImageView( m_device, imageView, nullptr );
+				}
+				
+				vkDestroySwapchainKHR( m_device, m_swapChain, nullptr );
+				
 				vkDestroyDevice( m_device, nullptr );
 				
 				if ( _enableValidationLayers ) {
