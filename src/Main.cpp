@@ -85,8 +85,8 @@ namespace crimild {
 				createLogicalDevice();
 				createSwapChain();
 				createImageViews();
-				createGraphicsPipeline();
 				createRenderPass();
+				createGraphicsPipeline();
 			}
 
 			void createInstance( void )
@@ -740,7 +740,7 @@ namespace crimild {
 
 				// Input Assembly
 
-				auto inputAssemby = VkPipelineInputAssemblyStateCreateInfo {
+				auto inputAssembly = VkPipelineInputAssemblyStateCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
 					.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 					.primitiveRestartEnable = VK_FALSE,
@@ -841,6 +841,29 @@ namespace crimild {
 					throw RuntimeException( "Failed to create pipeline layout" );
 				}
 
+				auto pipelineInfo = VkGraphicsPipelineCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+					.stageCount = 2,
+					.pStages = shaderStages,
+					.pVertexInputState = &vertexInputInfo,
+					.pInputAssemblyState = &inputAssembly,
+					.pViewportState = &viewportState,
+					.pRasterizationState = &rasterizer,
+					.pMultisampleState = &multisampling,
+					.pDepthStencilState = nullptr,
+					.pColorBlendState = &colorBlending,
+					.pDynamicState = nullptr,
+					.layout = m_pipelineLayout,
+					.renderPass = m_renderPass,
+					.subpass = 0,
+					.basePipelineHandle = VK_NULL_HANDLE,
+					.basePipelineIndex = -1,
+				};
+
+				if ( vkCreateGraphicsPipelines( m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_graphicsPipeline ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create graphics pipeline" );
+				}
+
 				// Cleanup
 				vkDestroyShaderModule( m_device, fragShaderModule, nullptr );
 				vkDestroyShaderModule( m_device, vertShaderModule, nullptr );
@@ -848,6 +871,7 @@ namespace crimild {
 
 		private:
 			VkPipelineLayout m_pipelineLayout;
+			VkPipeline m_graphicsPipeline;
 
 			//@}
 
@@ -962,6 +986,7 @@ namespace crimild {
 			{
 				// TODO: The order of these calls is causing a SEGFAULT
 
+				vkDestroyPipeline( m_device, m_graphicsPipeline, nullptr );
 				vkDestroyPipelineLayout( m_device, m_pipelineLayout, nullptr );
 				vkDestroyRenderPass( m_device, m_renderPass, nullptr );
 				
