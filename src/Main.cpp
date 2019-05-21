@@ -36,6 +36,7 @@
 #endif
 
 #include <set>
+#include <fstream>
 
 namespace crimild {
 
@@ -84,6 +85,7 @@ namespace crimild {
 				createLogicalDevice();
 				createSwapChain();
 				createImageViews();
+				createGraphicsPipeline();
 			}
 
 			void createInstance( void )
@@ -689,6 +691,94 @@ namespace crimild {
 			std::vector< VkImageView > m_swapChainImageViews;
 
 			//@}
+
+			/**
+			   \name Graphics Pipeline
+			*/
+			//@{
+			
+		public:
+			void createGraphicsPipeline( void )
+			{
+				auto vertShaderCode = readFile( "shaders/vert.spv" );
+				auto fragShaderCode = readFile( "shaders/frag.spv" );
+
+				// Shader Modules
+				auto vertShaderModule = createShaderModule( vertShaderCode );
+				auto fragShaderModule = createShaderModule( fragShaderCode );
+
+				// Shader Stage Creation
+				auto vertShaderStageInfo = VkPipelineShaderStageCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+					.stage = VK_SHADER_STAGE_VERTEX_BIT,
+					.module = vertShaderModule,
+					.pName = "main",
+				};
+
+				auto fragShaderStageInfo = VkPipelineShaderStageCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+					.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+					.module = fragShaderModule,
+					.pName = "main",
+				};
+
+				VkPipelineShaderStageCreateInfo shaderStages[] = {
+					vertShaderStageInfo,
+					fragShaderStageInfo,
+				};
+
+				// Cleanup
+				vkDestroyShaderModule( m_device, fragShaderModule, nullptr );
+				vkDestroyShaderModule( m_device, vertShaderModule, nullptr );
+			}
+
+			//@}
+
+			/**
+			   \name Shaders
+			*/
+			//@{
+
+		private:
+
+			static std::vector< char > readFile( const std::string &filename )
+			{
+				std::ifstream file( filename, std::ios::ate | std::ios::binary );
+				if ( !file.is_open() ) {
+					throw FileNotFoundException( "Failed to open file: " + filename );
+				}
+
+				auto fileSize = ( size_t ) file.tellg();
+				std::vector< char > buffer( fileSize );
+
+				file.seekg( 0 );
+				file.read( buffer.data(), fileSize );
+
+				file.close();
+
+				CRIMILD_LOG_DEBUG( "File ", filename, " loaded (", fileSize , " bytes)" );
+
+				return buffer;
+			}
+
+			VkShaderModule createShaderModule( const std::vector< char > &code )
+			{
+				auto createInfo = VkShaderModuleCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+					.codeSize = code.size(),
+					.pCode = reinterpret_cast< const uint32_t * >( code.data() ),
+				};
+
+				VkShaderModule shaderModule;
+				if ( vkCreateShaderModule( m_device, &createInfo, nullptr, &shaderModule ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create shader module" );
+				}
+
+				return shaderModule;
+			}
+
+			//@}
+			
 
 			/**
 			   \name Cleanup
