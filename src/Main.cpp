@@ -86,6 +86,7 @@ namespace crimild {
 				createSwapChain();
 				createImageViews();
 				createGraphicsPipeline();
+				createRenderPass();
 			}
 
 			void createInstance( void )
@@ -894,6 +895,61 @@ namespace crimild {
 			}
 
 			//@}
+
+			/**
+			   \name Render Passes
+			*/
+			//@{
+
+		private:
+
+			void createRenderPass( void )
+			{
+				// Attachment description
+				
+				auto colorAttachment = VkAttachmentDescription {
+					.format = m_swapChainImageFormat,
+					.samples = VK_SAMPLE_COUNT_1_BIT,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+				};
+
+				// Subpasses and attachment references
+
+				auto colorAttachmentRef = VkAttachmentReference {
+					.attachment = 0,
+					.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				};
+
+				auto subpass = VkSubpassDescription {
+					.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+					.colorAttachmentCount = 1,
+					.pColorAttachments = &colorAttachmentRef,
+				};
+
+				// Render Pass
+
+				auto renderPassInfo = VkRenderPassCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+					.attachmentCount = 1,
+					.pAttachments = &colorAttachment,
+					.subpassCount = 1,
+					.pSubpasses = &subpass,
+				};
+
+				if ( vkCreateRenderPass( m_device, &renderPassInfo, nullptr, &m_renderPass ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create render pass" );
+				}
+			}
+
+		private:
+			VkRenderPass m_renderPass;
+
+			//@}
 			
 
 			/**
@@ -907,6 +963,7 @@ namespace crimild {
 				// TODO: The order of these calls is causing a SEGFAULT
 
 				vkDestroyPipelineLayout( m_device, m_pipelineLayout, nullptr );
+				vkDestroyRenderPass( m_device, m_renderPass, nullptr );
 				
 				for ( auto imageView : m_swapChainImageViews ) {
 					vkDestroyImageView( m_device, imageView, nullptr );
