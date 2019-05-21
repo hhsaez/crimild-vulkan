@@ -727,10 +727,126 @@ namespace crimild {
 					fragShaderStageInfo,
 				};
 
+				// Vertex Input
+
+				auto vertexInputInfo = VkPipelineVertexInputStateCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+					.vertexBindingDescriptionCount = 0,
+					.pVertexBindingDescriptions = nullptr,
+					.vertexAttributeDescriptionCount = 0,
+					.pVertexAttributeDescriptions = nullptr,
+				};
+
+				// Input Assembly
+
+				auto inputAssemby = VkPipelineInputAssemblyStateCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+					.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+					.primitiveRestartEnable = VK_FALSE,
+				};
+
+				// Viewports and scissors
+
+				auto viewport = VkViewport {
+					.x = 0.0f,
+					.y = 0.0f,
+					.width = ( float ) m_swapChainExtent.width,
+					.height = ( float ) m_swapChainExtent.height,
+					.minDepth = 0.0f,
+					.maxDepth = 1.0f,
+				};
+
+				auto scissor = VkRect2D {
+					.offset = { 0, 0 },
+					.extent = m_swapChainExtent,
+				};
+
+				auto viewportState = VkPipelineViewportStateCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+					.viewportCount = 1,
+					.pViewports = &viewport,
+					.scissorCount = 1,
+					.pScissors = &scissor,
+				};
+
+				// Rasterizer
+
+				auto rasterizer = VkPipelineRasterizationStateCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+					.depthClampEnable = VK_FALSE, // VK_TRUE might be required for shadow maps
+					.rasterizerDiscardEnable = VK_FALSE, // VK_TRUE disables output to the framebuffer
+					.polygonMode = VK_POLYGON_MODE_FILL,
+					.lineWidth = 1.0f,
+					.cullMode = VK_CULL_MODE_BACK_BIT,
+					.frontFace = VK_FRONT_FACE_CLOCKWISE,
+					.depthBiasEnable = VK_FALSE, // Might be needed for shadow mapping
+					.depthBiasConstantFactor = 0.0f,
+					.depthBiasClamp = 0.0f,
+					.depthBiasSlopeFactor = 0.0f,
+				};
+
+				// Multisampling
+
+				auto multisampling = VkPipelineMultisampleStateCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+					.sampleShadingEnable = VK_FALSE,
+					.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+					.minSampleShading = 1.0f,
+					.pSampleMask = nullptr,
+					.alphaToCoverageEnable = VK_FALSE,
+					.alphaToOneEnable = VK_FALSE,
+				};
+
+				// Depth and Stencil testing (TBD)
+
+				// Color Blending
+
+				auto colorBlendAttachment = VkPipelineColorBlendAttachmentState {
+					.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+					.blendEnable = VK_FALSE,
+					.srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+					.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+					.colorBlendOp = VK_BLEND_OP_ADD,
+					.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+					.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+					.alphaBlendOp = VK_BLEND_OP_ADD,
+				};
+
+				auto colorBlending = VkPipelineColorBlendStateCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+					.logicOpEnable = VK_FALSE,
+					.logicOp = VK_LOGIC_OP_COPY,
+					.attachmentCount = 1,
+					.pAttachments = &colorBlendAttachment,
+					.blendConstants[ 0 ] = 0.0f,
+					.blendConstants[ 1 ] = 0.0f,
+					.blendConstants[ 2 ] = 0.0f,
+					.blendConstants[ 3 ] = 0.0f,
+				};
+
+				// Dynamic State (TBD)
+
+				// Pipeline layout
+
+				auto pipelineLayoutInfo = VkPipelineLayoutCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+					.setLayoutCount = 0,
+					.pSetLayouts = nullptr,
+					.pushConstantRangeCount = 0,
+					.pPushConstantRanges = nullptr,
+				};
+
+				if ( vkCreatePipelineLayout( m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create pipeline layout" );
+				}
+
 				// Cleanup
 				vkDestroyShaderModule( m_device, fragShaderModule, nullptr );
 				vkDestroyShaderModule( m_device, vertShaderModule, nullptr );
 			}
+
+		private:
+			VkPipelineLayout m_pipelineLayout;
 
 			//@}
 
@@ -789,6 +905,8 @@ namespace crimild {
 			void cleanup( void )
 			{
 				// TODO: The order of these calls is causing a SEGFAULT
+
+				vkDestroyPipelineLayout( m_device, m_pipelineLayout, nullptr );
 				
 				for ( auto imageView : m_swapChainImageViews ) {
 					vkDestroyImageView( m_device, imageView, nullptr );
