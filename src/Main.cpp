@@ -38,6 +38,8 @@
 #include <set>
 #include <fstream>
 
+const int MAX_FRAMES_IN_FLIGHT = 2;
+
 namespace crimild {
 
 	namespace vulkan {
@@ -71,7 +73,7 @@ namespace crimild {
 				glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
 				glfwWindowHint( GLFW_RESIZABLE, GLFW_FALSE );
 
-				_window = glfwCreateWindow( _width, _height, "Triangle", nullptr, nullptr );
+				_window = glfwCreateWindow( _width, _height, "Hello Vulkan!", nullptr, nullptr );
 
 				return true;
 			}
@@ -90,6 +92,7 @@ namespace crimild {
 				createFramebuffers();
 				createCommandPool();
 				createCommandBuffers();
+				createSyncObjects();
 			}
 
 			void createInstance( void )
@@ -386,7 +389,10 @@ namespace crimild {
 			{
 				while ( !glfwWindowShouldClose( _window ) ) {
 					glfwPollEvents();
+					drawFrame();
 				}
+
+				vkDeviceWaitIdle( m_device );
 			}
 
 		private:
@@ -958,6 +964,17 @@ namespace crimild {
 					.pColorAttachments = &colorAttachmentRef,
 				};
 
+				// Subpass dependencies
+
+				auto dependency = VkSubpassDependency {
+					.srcSubpass = VK_SUBPASS_EXTERNAL,
+					.dstSubpass = 0,
+					.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+					.srcAccessMask = 0,
+					.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+					.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				};
+				
 				// Render Pass
 
 				auto renderPassInfo = VkRenderPassCreateInfo {
@@ -966,11 +983,14 @@ namespace crimild {
 					.pAttachments = &colorAttachment,
 					.subpassCount = 1,
 					.pSubpasses = &subpass,
+					.dependencyCount = 1,
+					.pDependencies = &dependency,
 				};
 
 				if ( vkCreateRenderPass( m_device, &renderPassInfo, nullptr, &m_renderPass ) != VK_SUCCESS ) {
 					throw RuntimeException( "Failed to create render pass" );
 				}
+
 			}
 
 		private:
@@ -1108,6 +1128,126 @@ namespace crimild {
 			//@}
 
 			/**
+			   \name Semaphores and Fences
+			 */
+			//@{
+
+		private:
+			void createSyncObjects( void )
+			{
+				m_imageAvailableSemaphores.resize( MAX_FRAMES_IN_FLIGHT );
+				m_renderFinishedSemaphores.resize( MAX_FRAMES_IN_FLIGHT );
+				m_inFlightFences.resize( MAX_FRAMES_IN_FLIGHT );
+				
+				auto semaphoreInfo = VkSemaphoreCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+				};
+
+				auto fenceInfo = VkFenceCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+					.flags = VK_FENCE_CREATE_SIGNALED_BIT,
+				};
+
+				for ( auto i = 0l; i < MAX_FRAMES_IN_FLIGHT; ++i ) {
+					if ( vkCreateSemaphore( m_device, &semaphoreInfo, nullptr, &m_imageAvailableSemaphores[ i ] ) != VK_SUCCESS ||
+						vkCreateSemaphore( m_device, &semaphoreInfo, nullptr, &m_renderFinishedSemaphores[ i ] ) != VK_SUCCESS ||
+						vkCreateFence( m_device, &fenceInfo, nullptr, &m_inFlightFences[ i ] ) != VK_SUCCESS ) {
+						throw RuntimeException( "Failed to create synchronization objects" );
+					}
+				}
+			}
+
+		private:
+			std::vector< VkSemaphore > m_imageAvailableSemaphores;
+			std::vector< VkSemaphore > m_renderFinishedSemaphores;
+			std::vector< VkFence > m_inFlightFences;
+
+			//@}
+
+			/**
+			  \name Render frame
+			*/
+			//@{
+
+		private:
+			void drawFrame( void )
+			{
+				// Wait for previous frame to be finished
+				vkWaitForFences(
+					m_device,
+					1,
+					&m_inFlightFences[ m_currentFrame ],
+					VK_TRUE,
+					std::numeric_limits< uint64_t >::max()
+				);
+
+				vkResetFences( m_device, 1, &m_inFlightFences[ m_currentFrame ] );
+				
+				// Acquire image from swap chain
+				uint32_t imageIndex;
+				vkAcquireNextImageKHR(
+					m_device,
+					m_swapChain,
+					std::numeric_limits< uint64_t >::max(),
+					m_imageAvailableSemaphores[ m_currentFrame ],
+					VK_NULL_HANDLE,
+					&imageIndex
+				);
+
+				// Submitting the command buffer
+
+				VkSemaphore waitSemaphores[] = {
+					m_imageAvailableSemaphores[ m_currentFrame ],
+				};
+
+				VkPipelineStageFlags waitStages[] = {
+					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				};
+				
+				VkSemaphore signalSemaphores[] = {
+					m_renderFinishedSemaphores[ m_currentFrame ],
+				};
+				
+				auto submitInfo = VkSubmitInfo {
+					.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+					.waitSemaphoreCount = 1,
+					.pWaitSemaphores = waitSemaphores,
+					.pWaitDstStageMask = waitStages,
+					.commandBufferCount = 1,
+					.pCommandBuffers = &m_commandBuffers[ imageIndex ],
+					.signalSemaphoreCount = 1,
+					.pSignalSemaphores = signalSemaphores,
+				};
+
+				if ( vkQueueSubmit( m_graphicsQueue, 1, &submitInfo, m_inFlightFences[ m_currentFrame ] ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to submit draw command buffer" );
+				}
+
+				// Presentation
+
+				VkSwapchainKHR swapChains[] = { m_swapChain };
+
+				auto presentInfo = VkPresentInfoKHR {
+					.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+					.waitSemaphoreCount = 1,
+					.pWaitSemaphores = signalSemaphores,
+					.swapchainCount = 1,
+					.pSwapchains = swapChains,
+					.pImageIndices = &imageIndex,
+					.pResults = nullptr,
+				};
+
+				vkQueuePresentKHR( m_presentQueue, &presentInfo );
+
+				m_currentFrame = ( m_currentFrame + 1 ) % MAX_FRAMES_IN_FLIGHT;
+			}
+
+		private:
+			size_t m_currentFrame = 0;
+
+			//@}
+
+			/**
 			   \name Cleanup
 			*/
 			//@{
@@ -1115,7 +1255,11 @@ namespace crimild {
 		private:
 			void cleanup( void )
 			{
-				// TODO: The order of these calls is causing a SEGFAULT
+				for ( auto i = 0l; i < MAX_FRAMES_IN_FLIGHT; ++i ) {
+					vkDestroySemaphore( m_device, m_renderFinishedSemaphores[ i ], nullptr );
+					vkDestroySemaphore( m_device, m_imageAvailableSemaphores[ i ], nullptr );
+					vkDestroyFence( m_device, m_inFlightFences[ i ], nullptr );
+				}
 
 				vkDestroyCommandPool( m_device, m_commandPool, nullptr );
 
