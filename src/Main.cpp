@@ -89,6 +89,7 @@ namespace crimild {
 				createGraphicsPipeline();
 				createFramebuffers();
 				createCommandPool();
+				createCommandBuffers();
 			}
 
 			void createInstance( void )
@@ -1021,11 +1022,88 @@ namespace crimild {
 		private:
 			void createCommandPool( void )
 			{
-				
+				auto queueFamilyIndices = findQueueFamilies( _physicalDevice );
+
+				auto poolInfo = VkCommandPoolCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+					.queueFamilyIndex = queueFamilyIndices.graphicsFamily[ 0 ],
+					.flags = 0,
+				};
+
+				if ( vkCreateCommandPool( m_device, &poolInfo, nullptr, &m_commandPool ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create command pool" );
+				}
 			}
 
 		private:
 			VkCommandPool m_commandPool;
+
+			//@}
+
+			/**
+			   \name Command Buffers
+			*/
+			//@{
+
+		private:
+			void createCommandBuffers( void )
+			{
+				m_commandBuffers.resize( m_swapChainFramebuffers.size() );
+
+				auto allocInfo = VkCommandBufferAllocateInfo {
+					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+					.commandPool = m_commandPool,
+					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+					.commandBufferCount = ( uint32_t ) m_commandBuffers.size(),
+				};
+
+				if ( vkAllocateCommandBuffers( m_device, &allocInfo, m_commandBuffers.data() ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to allocate command buffers" );
+				}
+
+				for ( auto i = 0l; i < m_commandBuffers.size(); ++i ) {
+					auto beginInfo = VkCommandBufferBeginInfo {
+						.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+						.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
+						.pInheritanceInfo = nullptr,
+					};
+
+					if ( vkBeginCommandBuffer( m_commandBuffers[ i ], &beginInfo ) != VK_SUCCESS ) {
+						throw RuntimeException( "Failed to begin recording command buffer" );
+					}
+
+					auto clearColor = VkClearValue { 0.0f, 0.0f, 0.0f, 1.0f };
+
+					auto renderPassInfo = VkRenderPassBeginInfo {
+						.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+						.renderPass = m_renderPass,
+						.framebuffer = m_swapChainFramebuffers[ i ],
+						.renderArea.offset = { 0, 0 },
+						.renderArea.extent = m_swapChainExtent,
+						.clearValueCount = 1,
+						.pClearValues = &clearColor,
+					};
+
+					vkCmdBeginRenderPass( m_commandBuffers[ i ], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE );
+
+					vkCmdBindPipeline( m_commandBuffers[ i ], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline );
+
+					vkCmdDraw( m_commandBuffers[ i ], 3, 1, 0, 0 );
+
+					vkCmdEndRenderPass( m_commandBuffers[ i ] );
+
+					if ( vkEndCommandBuffer( m_commandBuffers[ i ] ) != VK_SUCCESS ) {
+						throw RuntimeException( "Failed to record command buffer" );
+					}
+				}
+			}
+
+		private:
+			/**
+			   Command buffers are automatically freed when their command pool
+			   is destroyed, so there's no need for an explicit cleanup.
+			 */
+			std::vector< VkCommandBuffer > m_commandBuffers;
 
 			//@}
 
@@ -1038,6 +1116,8 @@ namespace crimild {
 			void cleanup( void )
 			{
 				// TODO: The order of these calls is causing a SEGFAULT
+
+				vkDestroyCommandPool( m_device, m_commandPool, nullptr );
 
 				for ( auto framebuffer : m_swapChainFramebuffers ) {
 					vkDestroyFramebuffer( m_device, framebuffer, nullptr );
