@@ -87,6 +87,8 @@ namespace crimild {
 				createImageViews();
 				createRenderPass();
 				createGraphicsPipeline();
+				createFramebuffers();
+				createCommandPool();
 			}
 
 			void createInstance( void )
@@ -975,6 +977,57 @@ namespace crimild {
 
 			//@}
 			
+			/**
+			   \name Framebuffers
+			*/
+			//@{
+
+		private:
+			void createFramebuffers( void )
+			{
+				m_swapChainFramebuffers.resize( m_swapChainImageViews.size() );
+
+				for ( auto i = 0l; i < m_swapChainImageViews.size(); ++i ) {
+					VkImageView attachments[] = {
+						m_swapChainImageViews[ i ],
+					};
+					
+					auto framebufferInfo = VkFramebufferCreateInfo {
+						.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+						.renderPass = m_renderPass,
+						.attachmentCount = 1,
+						.pAttachments = attachments,
+						.width = m_swapChainExtent.width,
+						.height = m_swapChainExtent.height,
+						.layers = 1,
+					};
+					
+					if ( vkCreateFramebuffer( m_device, &framebufferInfo, nullptr, &m_swapChainFramebuffers[ i ] ) != VK_SUCCESS ) {
+						throw RuntimeException( "Failed to create framebuffer" );
+					}
+				}
+			}
+
+		private:
+			std::vector< VkFramebuffer > m_swapChainFramebuffers;
+
+			//@}
+
+			/**
+			   \name Command Pools
+			 */
+			//@{
+
+		private:
+			void createCommandPool( void )
+			{
+				
+			}
+
+		private:
+			VkCommandPool m_commandPool;
+
+			//@}
 
 			/**
 			   \name Cleanup
@@ -986,6 +1039,10 @@ namespace crimild {
 			{
 				// TODO: The order of these calls is causing a SEGFAULT
 
+				for ( auto framebuffer : m_swapChainFramebuffers ) {
+					vkDestroyFramebuffer( m_device, framebuffer, nullptr );
+				}
+				
 				vkDestroyPipeline( m_device, m_graphicsPipeline, nullptr );
 				vkDestroyPipelineLayout( m_device, m_pipelineLayout, nullptr );
 				vkDestroyRenderPass( m_device, m_renderPass, nullptr );
