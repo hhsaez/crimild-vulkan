@@ -60,11 +60,22 @@ namespace crimild {
 				cleanup();
 			}
 
+			/**
+			   \name Window setup
+			 */
+			//@{
+
 		private:
             static void errorCallback( int error, const char* description )
             {
                 std::cerr << "GLFW Error: (" << error << ") " << description << std::endl;
             }
+
+			static void framebufferResizeCallback( GLFWwindow *window, int width, int height )
+			{
+				auto app = reinterpret_cast< VulkanSimulation * >( glfwGetWindowUserPointer( window ) );
+				app->m_framebufferResized = true;
+			}
 
 			crimild::Bool initWindow( void)
 			{
@@ -75,8 +86,15 @@ namespace crimild {
 
 				_window = glfwCreateWindow( _width, _height, "Hello Vulkan!", nullptr, nullptr );
 
+				glfwSetWindowUserPointer( _window, this );
+				glfwSetFramebufferSizeCallback( _window, framebufferResizeCallback );
+
 				return true;
 			}
+
+			//@}
+
+		private:
 			
 			void initVulkan( void )
 			{
@@ -576,9 +594,12 @@ namespace crimild {
 					return capabilities.currentExtent;
 				}
 
+				int width, height;
+				glfwGetFramebufferSize( _window, &width, &height );
+
 				VkExtent2D actualExtent = {
-					_width,
-					_height,
+					static_cast< uint32_t >( width ),
+					static_cast< uint32_t >( height ),
 				};
 
 				actualExtent.width = std::max(
@@ -654,6 +675,49 @@ namespace crimild {
 
 				m_swapChainImageFormat = surfaceFormat.format;
 				m_swapChainExtent = extent;
+			}
+
+			void cleanupSwapChain( void )
+			{
+				for ( auto i = 0l; i < m_swapChainFramebuffers.size(); i++ ) {
+					vkDestroyFramebuffer( m_device, m_swapChainFramebuffers[ i ], nullptr );
+				}
+
+				vkFreeCommandBuffers(
+					m_device,
+					m_commandPool,
+					static_cast< uint32_t >( m_commandBuffers.size() ),
+					m_commandBuffers.data()
+				);
+
+				vkDestroyPipeline( m_device, m_graphicsPipeline, nullptr );
+				vkDestroyPipelineLayout( m_device, m_pipelineLayout, nullptr );
+				vkDestroyRenderPass( m_device, m_renderPass, nullptr );
+
+				for ( auto i = 0l; i < m_swapChainImageViews.size(); ++i ) {
+					vkDestroyImageView( m_device, m_swapChainImageViews[ i ], nullptr );
+				}
+
+				vkDestroySwapchainKHR( m_device, m_swapChain, nullptr );
+			}
+
+			void recreateSwapChain( void )
+			{
+				int width = 0;
+				int height = 0;
+				while ( width == 0 || height == 0 ) {
+					glfwGetFramebufferSize( _window, &width, &height );
+					glfwWaitEvents();
+				}
+				
+				vkDeviceWaitIdle( m_device );
+
+				createSwapChain();
+				createImageViews();
+				createRenderPass();
+				createGraphicsPipeline();
+				createFramebuffers();
+				createCommandBuffers();
 			}
 
 		private:
@@ -1181,11 +1245,9 @@ namespace crimild {
 					std::numeric_limits< uint64_t >::max()
 				);
 
-				vkResetFences( m_device, 1, &m_inFlightFences[ m_currentFrame ] );
-				
 				// Acquire image from swap chain
 				uint32_t imageIndex;
-				vkAcquireNextImageKHR(
+				auto result = vkAcquireNextImageKHR(
 					m_device,
 					m_swapChain,
 					std::numeric_limits< uint64_t >::max(),
@@ -1193,6 +1255,16 @@ namespace crimild {
 					VK_NULL_HANDLE,
 					&imageIndex
 				);
+
+				if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
+					// The swap chain has become incompatible with the surface
+					// and can no longer be used for rendering (window size changed?)
+					recreateSwapChain();
+					return;
+				}
+				else if ( result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR ) {
+					throw RuntimeException( "Failed to acquire swap chain image" );
+				};
 
 				// Submitting the command buffer
 
@@ -1219,6 +1291,8 @@ namespace crimild {
 					.pSignalSemaphores = signalSemaphores,
 				};
 
+				vkResetFences( m_device, 1, &m_inFlightFences[ m_currentFrame ] );
+				
 				if ( vkQueueSubmit( m_graphicsQueue, 1, &submitInfo, m_inFlightFences[ m_currentFrame ] ) != VK_SUCCESS ) {
 					throw RuntimeException( "Failed to submit draw command buffer" );
 				}
@@ -1237,13 +1311,24 @@ namespace crimild {
 					.pResults = nullptr,
 				};
 
-				vkQueuePresentKHR( m_presentQueue, &presentInfo );
+				result = vkQueuePresentKHR( m_presentQueue, &presentInfo );
+				if ( result != VK_SUCCESS ) {
+					if ( result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || m_framebufferResized ) {
+						// We want the best possible result, so recreate swapchain in both cases
+						recreateSwapChain();
+						m_framebufferResized = false;
+					}
+					else {
+						throw RuntimeException( "Failed to present swap chain image" );
+					}
+				}
 
 				m_currentFrame = ( m_currentFrame + 1 ) % MAX_FRAMES_IN_FLIGHT;
 			}
 
 		private:
 			size_t m_currentFrame = 0;
+			bool m_framebufferResized = false;
 
 			//@}
 
@@ -1255,6 +1340,8 @@ namespace crimild {
 		private:
 			void cleanup( void )
 			{
+				cleanupSwapChain();
+				
 				for ( auto i = 0l; i < MAX_FRAMES_IN_FLIGHT; ++i ) {
 					vkDestroySemaphore( m_device, m_renderFinishedSemaphores[ i ], nullptr );
 					vkDestroySemaphore( m_device, m_imageAvailableSemaphores[ i ], nullptr );
@@ -1262,20 +1349,6 @@ namespace crimild {
 				}
 
 				vkDestroyCommandPool( m_device, m_commandPool, nullptr );
-
-				for ( auto framebuffer : m_swapChainFramebuffers ) {
-					vkDestroyFramebuffer( m_device, framebuffer, nullptr );
-				}
-				
-				vkDestroyPipeline( m_device, m_graphicsPipeline, nullptr );
-				vkDestroyPipelineLayout( m_device, m_pipelineLayout, nullptr );
-				vkDestroyRenderPass( m_device, m_renderPass, nullptr );
-				
-				for ( auto imageView : m_swapChainImageViews ) {
-					vkDestroyImageView( m_device, imageView, nullptr );
-				}
-				
-				vkDestroySwapchainKHR( m_device, m_swapChain, nullptr );
 				
 				vkDestroyDevice( m_device, nullptr );
 				
@@ -1284,7 +1357,6 @@ namespace crimild {
 				}
 
 				vkDestroySurfaceKHR( _instance, _surface, nullptr );
-				
 				vkDestroyInstance( _instance, nullptr );
 				
 				if ( _window != nullptr ) {
