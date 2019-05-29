@@ -37,12 +37,45 @@
 
 #include <set>
 #include <fstream>
+#include <array>
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
 namespace crimild {
 
 	namespace vulkan {
+
+		struct Vertex {
+			Vector2f pos;
+			Vector3f color;
+
+			static VkVertexInputBindingDescription getBindingDescription( void )
+			{
+				return VkVertexInputBindingDescription {
+					.binding = 0,
+					.stride = sizeof( Vertex ),
+					.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+				};
+			}
+
+			static std::array< VkVertexInputAttributeDescription, 2 > getAttributeDescriptions( void )
+			{
+				return std::array< VkVertexInputAttributeDescription, 2 > {
+					VkVertexInputAttributeDescription {
+						.binding = 0,
+						.location = 0,
+						.format = VK_FORMAT_R32G32_SFLOAT,
+						.offset = offsetof( Vertex, pos ),
+					},
+					VkVertexInputAttributeDescription {
+						.binding = 0,
+						.location = 1,
+						.format = VK_FORMAT_R32G32B32_SFLOAT,
+						.offset = offsetof( Vertex, color )
+					},
+				};
+			}
+		};
 
 		/**
 		   \todo Move vkEnumerate* code to templates? Maybe using a lambda for the actual function?
@@ -109,6 +142,7 @@ namespace crimild {
 				createGraphicsPipeline();
 				createFramebuffers();
 				createCommandPool();
+				createVertexBuffer();
 				createCommandBuffers();
 				createSyncObjects();
 			}
@@ -250,12 +284,12 @@ namespace crimild {
 				vkEnumeratePhysicalDevices( _instance, &deviceCount, devices.data() );
 				for ( const auto &device : devices ) {
 					if ( isDeviceSuitable( device ) ) {
-						_physicalDevice = device;
+						m_physicalDevice = device;
 						break;
 					}
 				}
 
-				if ( _physicalDevice == VK_NULL_HANDLE ) {
+				if ( m_physicalDevice == VK_NULL_HANDLE ) {
 					throw RuntimeException( "Failed to find a suitable GPU" );
 				}
 			}
@@ -308,7 +342,7 @@ namespace crimild {
 			}
 
 		private:
-			VkPhysicalDevice _physicalDevice = VK_NULL_HANDLE;
+			VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
 
 			//@}
 
@@ -436,7 +470,7 @@ namespace crimild {
 		private:
 			void createLogicalDevice( void )
 			{
-				QueueFamilyIndices indices = findQueueFamilies( _physicalDevice );
+				QueueFamilyIndices indices = findQueueFamilies( m_physicalDevice );
 				if ( !indices.isComplete() ) {
 					// should never happen
 					throw RuntimeException( "Invalid physical device" );
@@ -481,7 +515,7 @@ namespace crimild {
 					createInfo.enabledLayerCount = 0;
 				}
 
-				if ( vkCreateDevice( _physicalDevice, &createInfo, nullptr, &m_device ) != VK_SUCCESS ) {
+				if ( vkCreateDevice( m_physicalDevice, &createInfo, nullptr, &m_device ) != VK_SUCCESS ) {
 					throw RuntimeException( "Failed to create logical device" );
 				}
 
@@ -618,7 +652,7 @@ namespace crimild {
 			{
 				CRIMILD_LOG_DEBUG( "Creating swapchain" );
 				
-				auto swapChainSupport = querySwapChainSupport( _physicalDevice );
+				auto swapChainSupport = querySwapChainSupport( m_physicalDevice );
 				auto surfaceFormat = chooseSwapSurfaceFormat( swapChainSupport.formats );
 				auto presentMode = chooseSwapPresentMode( swapChainSupport.presentModes );
 				auto extent = chooseSwapExtent( swapChainSupport.capabilities );
@@ -642,7 +676,7 @@ namespace crimild {
 					.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				};
 
-				auto indices = findQueueFamilies( _physicalDevice );
+				auto indices = findQueueFamilies( m_physicalDevice );
 				uint32_t queueFamilyIndices[] = {
 					indices.graphicsFamily[ 0 ],
 					indices.presentFamily[ 0 ],
@@ -803,12 +837,15 @@ namespace crimild {
 
 				// Vertex Input
 
+				auto bindingDescription = Vertex::getBindingDescription();
+				auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
 				auto vertexInputInfo = VkPipelineVertexInputStateCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-					.vertexBindingDescriptionCount = 0,
-					.pVertexBindingDescriptions = nullptr,
-					.vertexAttributeDescriptionCount = 0,
-					.pVertexAttributeDescriptions = nullptr,
+					.vertexBindingDescriptionCount = 1,
+					.pVertexBindingDescriptions = &bindingDescription,
+					.vertexAttributeDescriptionCount = static_cast< uint32_t >( attributeDescriptions.size() ),
+					.pVertexAttributeDescriptions = attributeDescriptions.data(),
 				};
 
 				// Input Assembly
@@ -1106,7 +1143,7 @@ namespace crimild {
 		private:
 			void createCommandPool( void )
 			{
-				auto queueFamilyIndices = findQueueFamilies( _physicalDevice );
+				auto queueFamilyIndices = findQueueFamilies( m_physicalDevice );
 
 				auto poolInfo = VkCommandPoolCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -1121,6 +1158,75 @@ namespace crimild {
 
 		private:
 			VkCommandPool m_commandPool;
+
+			//@}
+
+			/**
+			   \name Vertex buffers
+			*/
+			//@{
+
+		private:
+
+			void createVertexBuffer( void )
+			{
+				m_vertices = {
+					{ { 0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
+					{ { 0.5f, 0.5f }, { 0.0f, 1.0f, 0.0f } },
+					{ { -0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
+				};
+				
+				auto bufferInfo = VkBufferCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+					.size = sizeof( m_vertices[ 0 ] ) * m_vertices.size(),
+					.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+					.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+					.flags = 0, // optional
+				};
+
+				if ( vkCreateBuffer( m_device, &bufferInfo, nullptr, &m_vertexBuffer ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create vertex buffer" );
+				}
+
+				VkMemoryRequirements memRequirements;
+				vkGetBufferMemoryRequirements( m_device, m_vertexBuffer, &memRequirements );
+
+				auto allocInfo = VkMemoryAllocateInfo {
+					.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+					.allocationSize = memRequirements.size,
+					.memoryTypeIndex = findMemoryType( memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
+				};
+
+				if ( vkAllocateMemory( m_device, &allocInfo, nullptr, &m_vertexBufferMemory ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to allocate vertex buffer memory" );
+				}
+
+				vkBindBufferMemory( m_device, m_vertexBuffer, m_vertexBufferMemory, 0 );
+
+				void *data;
+				vkMapMemory( m_device, m_vertexBufferMemory, 0, bufferInfo.size, 0, &data );
+				memcpy( data, m_vertices.data(), ( size_t ) bufferInfo.size );
+				vkUnmapMemory( m_device, m_vertexBufferMemory );
+			}
+
+			uint32_t findMemoryType( uint32_t typeFilter, VkMemoryPropertyFlags properties )
+			{
+				VkPhysicalDeviceMemoryProperties memProperties;
+				vkGetPhysicalDeviceMemoryProperties( m_physicalDevice, &memProperties );
+
+				for ( uint32_t i = 0; i < memProperties.memoryTypeCount; ++i ) {
+					if ( typeFilter & ( 1 << i ) && ( memProperties.memoryTypes[ i ].propertyFlags & properties ) == properties ) {
+						return i;
+					}
+				}
+
+				throw RuntimeException( "Failed to find suitable memory type" );
+			}
+
+		private:
+			std::vector< Vertex > m_vertices;
+			VkBuffer m_vertexBuffer;
+			VkDeviceMemory m_vertexBufferMemory;
 
 			//@}
 
@@ -1172,7 +1278,11 @@ namespace crimild {
 
 					vkCmdBindPipeline( m_commandBuffers[ i ], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline );
 
-					vkCmdDraw( m_commandBuffers[ i ], 3, 1, 0, 0 );
+					VkBuffer vertexBuffers[] = { m_vertexBuffer };
+					VkDeviceSize offsets[] = { 0 };
+					vkCmdBindVertexBuffers( m_commandBuffers[ i ], 0, 1, vertexBuffers, offsets );
+
+					vkCmdDraw( m_commandBuffers[ i ], static_cast< uint32_t >( m_vertices.size() ), 1, 0, 0 );
 
 					vkCmdEndRenderPass( m_commandBuffers[ i ] );
 
@@ -1341,6 +1451,9 @@ namespace crimild {
 			void cleanup( void )
 			{
 				cleanupSwapChain();
+
+				vkDestroyBuffer( m_device, m_vertexBuffer, nullptr );
+				vkFreeMemory( m_device, m_vertexBufferMemory, nullptr );
 				
 				for ( auto i = 0l; i < MAX_FRAMES_IN_FLIGHT; ++i ) {
 					vkDestroySemaphore( m_device, m_renderFinishedSemaphores[ i ], nullptr );
