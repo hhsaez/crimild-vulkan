@@ -84,6 +84,18 @@ namespace crimild {
 		public:
 			void run( void )
 			{
+				m_vertices = {
+					{ { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
+					{ { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
+					{ { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
+					{ { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f } },
+				};
+
+				m_indices = {
+					0, 1, 2,
+					2, 3, 0,
+				};
+
 				if ( !initWindow() ) {
 					return;
 				}
@@ -143,6 +155,7 @@ namespace crimild {
 				createFramebuffers();
 				createCommandPool();
 				createVertexBuffer();
+				createIndexBuffer();
 				createCommandBuffers();
 				createSyncObjects();
 			}
@@ -1162,51 +1175,40 @@ namespace crimild {
 			//@}
 
 			/**
-			   \name Vertex buffers
+			   \name Buffers
 			*/
 			//@{
 
 		private:
-
-			void createVertexBuffer( void )
+			void createBuffer( VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory )
 			{
-				m_vertices = {
-					{ { 0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
-					{ { 0.5f, 0.5f }, { 0.0f, 1.0f, 0.0f } },
-					{ { -0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
-				};
-				
 				auto bufferInfo = VkBufferCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-					.size = sizeof( m_vertices[ 0 ] ) * m_vertices.size(),
-					.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+					.size = size,
+					.usage = usage,
 					.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-					.flags = 0, // optional
 				};
 
-				if ( vkCreateBuffer( m_device, &bufferInfo, nullptr, &m_vertexBuffer ) != VK_SUCCESS ) {
-					throw RuntimeException( "Failed to create vertex buffer" );
+				if ( vkCreateBuffer( m_device, &bufferInfo, nullptr, &buffer ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create buffer" );
 				}
 
 				VkMemoryRequirements memRequirements;
-				vkGetBufferMemoryRequirements( m_device, m_vertexBuffer, &memRequirements );
+				vkGetBufferMemoryRequirements( m_device, buffer, &memRequirements );
 
 				auto allocInfo = VkMemoryAllocateInfo {
 					.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 					.allocationSize = memRequirements.size,
-					.memoryTypeIndex = findMemoryType( memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
+					.memoryTypeIndex = findMemoryType( memRequirements.memoryTypeBits, properties ),
 				};
 
-				if ( vkAllocateMemory( m_device, &allocInfo, nullptr, &m_vertexBufferMemory ) != VK_SUCCESS ) {
-					throw RuntimeException( "Failed to allocate vertex buffer memory" );
+				// TODO: we're not supposed to use vkAllocateMemory multiple times.
+				// Instead, use a memory allocator and vkAllocateMemeory as few times as possible
+				if ( vkAllocateMemory( m_device, &allocInfo, nullptr, &bufferMemory ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to allocate buffer memory" );					
 				}
 
-				vkBindBufferMemory( m_device, m_vertexBuffer, m_vertexBufferMemory, 0 );
-
-				void *data;
-				vkMapMemory( m_device, m_vertexBufferMemory, 0, bufferInfo.size, 0, &data );
-				memcpy( data, m_vertices.data(), ( size_t ) bufferInfo.size );
-				vkUnmapMemory( m_device, m_vertexBufferMemory );
+				vkBindBufferMemory( m_device, buffer, bufferMemory, 0 );
 			}
 
 			uint32_t findMemoryType( uint32_t typeFilter, VkMemoryPropertyFlags properties )
@@ -1223,10 +1225,123 @@ namespace crimild {
 				throw RuntimeException( "Failed to find suitable memory type" );
 			}
 
+			void copyBuffer( VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size )
+			{
+				// TODO: might be better to create a different pool for coping buffers
+				
+				auto allocInfo = VkCommandBufferAllocateInfo {
+					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+					.commandPool = m_commandPool,
+					.commandBufferCount = 1,
+				};
+
+				VkCommandBuffer commandBuffer;
+				vkAllocateCommandBuffers( m_device, &allocInfo, &commandBuffer );
+
+				auto beginInfo = VkCommandBufferBeginInfo {
+					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+					.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+				};
+
+				vkBeginCommandBuffer( commandBuffer, &beginInfo );
+
+				auto copyRegion = VkBufferCopy {
+					.srcOffset = 0,
+					.dstOffset = 0,
+					.size = size,
+				};
+
+				vkCmdCopyBuffer( commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion );
+
+				vkEndCommandBuffer( commandBuffer );
+
+				auto submitInfo = VkSubmitInfo {
+					.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+					.commandBufferCount = 1,
+					.pCommandBuffers = &commandBuffer,
+				};
+
+				vkQueueSubmit( m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE );
+				vkQueueWaitIdle( m_graphicsQueue );
+
+				vkFreeCommandBuffers( m_device, m_commandPool, 1, &commandBuffer );
+			}
+
+			void createVertexBuffer( void )
+			{
+				VkDeviceSize bufferSize = sizeof( m_vertices[ 0 ] ) * m_vertices.size();
+
+				VkBuffer stagingBuffer;
+				VkDeviceMemory stagingBufferMemory;
+				
+				createBuffer(
+					bufferSize,
+					VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					stagingBuffer,
+					stagingBufferMemory
+				);
+
+				void *data;
+				vkMapMemory( m_device, stagingBufferMemory, 0, bufferSize, 0, &data );
+				memcpy( data, m_vertices.data(), ( size_t ) bufferSize );
+				vkUnmapMemory( m_device, stagingBufferMemory );
+				
+				createBuffer(
+					bufferSize,
+					VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+					m_vertexBuffer,
+					m_vertexBufferMemory
+				);
+
+				copyBuffer( stagingBuffer, m_vertexBuffer, bufferSize );
+
+				vkDestroyBuffer( m_device, stagingBuffer, nullptr );
+				vkFreeMemory( m_device, stagingBufferMemory, nullptr );
+			}
+
+			void createIndexBuffer()
+			{
+				VkDeviceSize bufferSize = sizeof( m_indices[ 0 ] ) * m_indices.size();
+
+				VkBuffer stagingBuffer;
+				VkDeviceMemory stagingBufferMemory;
+				createBuffer(
+					bufferSize,
+					VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					stagingBuffer,
+					stagingBufferMemory
+				);
+
+				void *data;
+				vkMapMemory( m_device, stagingBufferMemory, 0, bufferSize, 0, &data );
+				memcpy( data, m_indices.data(), ( size_t ) bufferSize );
+				vkUnmapMemory( m_device, stagingBufferMemory );
+
+				createBuffer(
+					bufferSize,
+					VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+					m_indexBuffer,
+					m_indexBufferMemory
+				);
+
+				copyBuffer( stagingBuffer, m_indexBuffer, bufferSize );
+
+				vkDestroyBuffer( m_device, stagingBuffer, nullptr );
+				vkFreeMemory( m_device, stagingBufferMemory, nullptr );
+			}
+
 		private:
 			std::vector< Vertex > m_vertices;
+			std::vector< uint16_t > m_indices;
 			VkBuffer m_vertexBuffer;
 			VkDeviceMemory m_vertexBufferMemory;
+			VkBuffer m_indexBuffer;
+			VkDeviceMemory m_indexBufferMemory;
 
 			//@}
 
@@ -1278,11 +1393,22 @@ namespace crimild {
 
 					vkCmdBindPipeline( m_commandBuffers[ i ], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline );
 
+					// bind vertex buffers
 					VkBuffer vertexBuffers[] = { m_vertexBuffer };
 					VkDeviceSize offsets[] = { 0 };
 					vkCmdBindVertexBuffers( m_commandBuffers[ i ], 0, 1, vertexBuffers, offsets );
 
-					vkCmdDraw( m_commandBuffers[ i ], static_cast< uint32_t >( m_vertices.size() ), 1, 0, 0 );
+					// bind index buffer
+					vkCmdBindIndexBuffer( m_commandBuffers[ i ], m_indexBuffer, 0, VK_INDEX_TYPE_UINT16 );
+
+					vkCmdDrawIndexed(
+						m_commandBuffers[ i ],
+						static_cast< uint32_t >( m_indices.size() ),
+						1,
+						0,
+						0,
+						0
+					);
 
 					vkCmdEndRenderPass( m_commandBuffers[ i ] );
 
@@ -1454,6 +1580,8 @@ namespace crimild {
 
 				vkDestroyBuffer( m_device, m_vertexBuffer, nullptr );
 				vkFreeMemory( m_device, m_vertexBufferMemory, nullptr );
+				vkDestroyBuffer( m_device, m_indexBuffer, nullptr );
+				vkFreeMemory( m_device, m_indexBufferMemory, nullptr );
 				
 				for ( auto i = 0l; i < MAX_FRAMES_IN_FLIGHT; ++i ) {
 					vkDestroySemaphore( m_device, m_renderFinishedSemaphores[ i ], nullptr );
