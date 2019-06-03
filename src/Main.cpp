@@ -77,6 +77,12 @@ namespace crimild {
 			}
 		};
 
+		struct UniformBufferObject {
+			Matrix4f model;
+			Matrix4f view;
+			Matrix4f proj;
+		};
+
 		/**
 		   \todo Move vkEnumerate* code to templates? Maybe using a lambda for the actual function?
 		 */
@@ -151,11 +157,15 @@ namespace crimild {
 				createSwapChain();
 				createImageViews();
 				createRenderPass();
+				createDescriptorSetLayout();
 				createGraphicsPipeline();
 				createFramebuffers();
 				createCommandPool();
 				createVertexBuffer();
 				createIndexBuffer();
+				createUniformBuffers();
+				createDescriptorPool();
+				createDescriptorSets();
 				createCommandBuffers();
 				createSyncObjects();
 			}
@@ -746,6 +756,13 @@ namespace crimild {
 				}
 
 				vkDestroySwapchainKHR( m_device, m_swapChain, nullptr );
+
+				for ( auto i = 0l; i < m_swapChainImages.size(); ++i ) {
+					vkDestroyBuffer( m_device, m_uniformBuffers[ i ], nullptr );
+					vkFreeMemory( m_device, m_uniformBuffersMemory[ i ], nullptr );
+				}
+
+				vkDestroyDescriptorPool( m_device, m_descriptorPool, nullptr );
 			}
 
 			void recreateSwapChain( void )
@@ -764,6 +781,9 @@ namespace crimild {
 				createRenderPass();
 				createGraphicsPipeline();
 				createFramebuffers();
+				createUniformBuffers();
+				createDescriptorPool();
+				createDescriptorSets();
 				createCommandBuffers();
 			}
 
@@ -780,7 +800,7 @@ namespace crimild {
 			*/
 			//@{
 
-		public:
+		private:
 			void createImageViews( void )
 			{
 				m_swapChainImageViews.resize( m_swapChainImages.size() );
@@ -810,6 +830,100 @@ namespace crimild {
 
 		private:
 			std::vector< VkImageView > m_swapChainImageViews;
+
+			//@}
+
+			/**
+			   \name Descriptor sets
+			 */
+			//@{
+			
+		private:
+
+			void createDescriptorSetLayout( void )
+			{
+				auto uboLayoutBinding = VkDescriptorSetLayoutBinding {
+					.binding = 0,
+					.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+					.descriptorCount = 1,
+					.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+					.pImmutableSamplers = nullptr,
+				};
+
+				auto layoutInfo = VkDescriptorSetLayoutCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+					.bindingCount = 1,
+					.pBindings = &uboLayoutBinding,
+				};
+
+				if ( vkCreateDescriptorSetLayout( m_device, &layoutInfo, nullptr, &m_descriptorSetLayout ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create descriptor set layout" );
+				}
+			}
+
+			void createDescriptorPool( void )
+			{
+				auto poolSize = VkDescriptorPoolSize {
+					.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+					.descriptorCount = static_cast< uint32_t >( m_swapChainImages.size() ),
+				};
+
+				auto poolInfo = VkDescriptorPoolCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+					.poolSizeCount = 1,
+					.pPoolSizes = &poolSize,
+					.maxSets = static_cast< uint32_t >( m_swapChainImages.size() ),
+				};
+
+				if ( vkCreateDescriptorPool( m_device, &poolInfo, nullptr, &m_descriptorPool ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create descriptor pool" );
+				}
+			}
+
+			void createDescriptorSets( void )
+			{
+				std::vector< VkDescriptorSetLayout > layouts( m_swapChainImages.size(), m_descriptorSetLayout );
+
+				auto allocInfo = VkDescriptorSetAllocateInfo {
+					.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+					.descriptorPool = m_descriptorPool,
+					.descriptorSetCount = static_cast< uint32_t >( m_swapChainImages.size() ),
+					.pSetLayouts = layouts.data(),
+				};
+
+				m_descriptorSets.resize( m_swapChainImages.size() );
+
+				if ( vkAllocateDescriptorSets( m_device, &allocInfo, m_descriptorSets.data() ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to allocate descriptor sets" );
+				}
+
+				for ( auto i = 0l; i < m_swapChainImages.size(); ++i ) {
+					auto bufferInfo = VkDescriptorBufferInfo {
+						.buffer = m_uniformBuffers[ i ],
+						.offset = 0,
+						.range = sizeof( UniformBufferObject ),
+					};
+
+					auto descriptorWrite = VkWriteDescriptorSet {
+						.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+						.dstSet = m_descriptorSets[ i ],
+						.dstBinding = 0,
+						.dstArrayElement = 0,
+						.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+						.descriptorCount = 1,
+						.pBufferInfo = &bufferInfo,
+						.pImageInfo = nullptr,
+						.pTexelBufferView = nullptr,
+					};
+
+					vkUpdateDescriptorSets( m_device, 1, &descriptorWrite, 0, nullptr );
+				}
+			}
+
+		private:
+			VkDescriptorSetLayout m_descriptorSetLayout;
+			VkDescriptorPool m_descriptorPool;
+			std::vector< VkDescriptorSet > m_descriptorSets;
 
 			//@}
 
@@ -902,7 +1016,7 @@ namespace crimild {
 					.polygonMode = VK_POLYGON_MODE_FILL,
 					.lineWidth = 1.0f,
 					.cullMode = VK_CULL_MODE_BACK_BIT,
-					.frontFace = VK_FRONT_FACE_CLOCKWISE,
+					.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
 					.depthBiasEnable = VK_FALSE, // Might be needed for shadow mapping
 					.depthBiasConstantFactor = 0.0f,
 					.depthBiasClamp = 0.0f,
@@ -954,8 +1068,8 @@ namespace crimild {
 
 				auto pipelineLayoutInfo = VkPipelineLayoutCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-					.setLayoutCount = 0,
-					.pSetLayouts = nullptr,
+					.setLayoutCount = 1,
+					.pSetLayouts = &m_descriptorSetLayout,
 					.pushConstantRangeCount = 0,
 					.pPushConstantRanges = nullptr,
 				};
@@ -1335,13 +1449,93 @@ namespace crimild {
 				vkFreeMemory( m_device, stagingBufferMemory, nullptr );
 			}
 
+			void createUniformBuffers( void )
+			{
+				VkDeviceSize bufferSize = sizeof( UniformBufferObject );
+
+				m_uniformBuffers.resize( m_swapChainImages.size() );
+				m_uniformBuffersMemory.resize( m_swapChainImages.size() );
+
+				for ( auto i = 0l; i < m_swapChainImages.size(); ++i ) {
+					createBuffer(
+						bufferSize,
+						VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+						VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+						m_uniformBuffers[ i ],
+						m_uniformBuffersMemory[ i ]
+					);
+				}
+			}
+
+			void updateUniformBuffer( uint32_t currentImage )
+			{
+				static auto startTime = std::chrono::high_resolution_clock::now();
+
+				auto currentTime = std::chrono::high_resolution_clock::now();
+				auto time = std::chrono::duration< float, std::chrono::seconds::period >( currentTime - startTime ).count();
+
+				auto ubo = UniformBufferObject { };
+
+				// Model
+				ubo.model = []( crimild::Real32 time ) {
+					Transformation t;
+					t.rotate().fromAxisAngle( Vector3f::UNIT_Z, time * 35.0f * Numericf::DEG_TO_RAD );
+					return t.computeModelMatrix();
+				}( time );
+
+				auto lookAt = []( const Vector3f &eye, const Vector3f &target, const Vector3f &up ) -> Matrix4f {
+					auto z = ( target - eye ).getNormalized();
+					auto y = up.getNormalized();
+					auto x = ( z ^ y ).getNormalized();
+					y = ( x ^ z ).getNormalized();
+					z *= -1;
+
+					return Matrix4f(
+						x.x(), y.x(), z.x(), 0.0f,
+						x.y(), y.y(), z.y(), 0.0f,
+						x.z(), y.z(), z.z(), 0.0f,
+						-( x * eye ), -( y * eye ), -( z * eye ), 1.0f
+					);
+				};
+
+				// View
+				ubo.view = lookAt(
+					Vector3f( 2.0f, 2.0f, 2.0f ),
+					Vector3f( 0.0f, 0.0f, 0.0f ),
+					Vector3f( 0.0f, 1.0f, 0.0f )
+				);
+
+				// Projection
+				ubo.proj = []( float width, float height ) {
+					auto frustum = Frustumf( 45.0f, width / height, 0.1f, 100.0f );
+					auto proj = frustum.computeProjectionMatrix();
+
+					// Invert Y-axis
+					// This also needs to set front face as counter-clockwise for culling
+					// when configuring pipeline
+					// Also: https://matthewwellings.com/blog/the-new-vulkan-coordinate-system/
+					proj[ 5 ] *= -1.0f;
+
+					return proj;
+				}( m_swapChainExtent.width, m_swapChainExtent.height );
+				
+				void *data;
+				vkMapMemory( m_device, m_uniformBuffersMemory[ currentImage ], 0, sizeof( ubo ), 0, &data );
+				memcpy( data, &ubo, sizeof( ubo ) );
+				vkUnmapMemory( m_device, m_uniformBuffersMemory[ currentImage ] );
+			}
+
 		private:
 			std::vector< Vertex > m_vertices;
 			std::vector< uint16_t > m_indices;
+
 			VkBuffer m_vertexBuffer;
 			VkDeviceMemory m_vertexBufferMemory;
 			VkBuffer m_indexBuffer;
 			VkDeviceMemory m_indexBufferMemory;
+
+			std::vector< VkBuffer > m_uniformBuffers;
+			std::vector< VkDeviceMemory > m_uniformBuffersMemory;
 
 			//@}
 
@@ -1400,6 +1594,18 @@ namespace crimild {
 
 					// bind index buffer
 					vkCmdBindIndexBuffer( m_commandBuffers[ i ], m_indexBuffer, 0, VK_INDEX_TYPE_UINT16 );
+
+					// bind uniform buffers
+					vkCmdBindDescriptorSets(
+						m_commandBuffers[ i ],
+						VK_PIPELINE_BIND_POINT_GRAPHICS,
+						m_pipelineLayout,
+						0,
+						1,
+						&m_descriptorSets[ i ],
+						0,
+						nullptr
+					);
 
 					vkCmdDrawIndexed(
 						m_commandBuffers[ i ],
@@ -1502,6 +1708,9 @@ namespace crimild {
 					throw RuntimeException( "Failed to acquire swap chain image" );
 				};
 
+				// Updating uniform buffers
+				updateUniformBuffer( imageIndex );
+
 				// Submitting the command buffer
 
 				VkSemaphore waitSemaphores[] = {
@@ -1577,6 +1786,8 @@ namespace crimild {
 			void cleanup( void )
 			{
 				cleanupSwapChain();
+
+				vkDestroyDescriptorSetLayout( m_device, m_descriptorSetLayout, nullptr );
 
 				vkDestroyBuffer( m_device, m_vertexBuffer, nullptr );
 				vkFreeMemory( m_device, m_vertexBufferMemory, nullptr );
