@@ -31,6 +31,9 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #if !defined( NDEBUG )
 #define CRIMILD_DEBUG true
 #endif
@@ -48,6 +51,7 @@ namespace crimild {
 		struct Vertex {
 			Vector2f pos;
 			Vector3f color;
+			Vector2f texCoord;
 
 			static VkVertexInputBindingDescription getBindingDescription( void )
 			{
@@ -58,9 +62,9 @@ namespace crimild {
 				};
 			}
 
-			static std::array< VkVertexInputAttributeDescription, 2 > getAttributeDescriptions( void )
+			static std::array< VkVertexInputAttributeDescription, 3 > getAttributeDescriptions( void )
 			{
-				return std::array< VkVertexInputAttributeDescription, 2 > {
+				return std::array< VkVertexInputAttributeDescription, 3 > {
 					VkVertexInputAttributeDescription {
 						.binding = 0,
 						.location = 0,
@@ -71,7 +75,13 @@ namespace crimild {
 						.binding = 0,
 						.location = 1,
 						.format = VK_FORMAT_R32G32B32_SFLOAT,
-						.offset = offsetof( Vertex, color )
+						.offset = offsetof( Vertex, color ),
+					},
+					VkVertexInputAttributeDescription {
+						.binding = 0,
+						.location = 2,
+						.format = VK_FORMAT_R32G32_SFLOAT,
+						.offset = offsetof( Vertex, texCoord ),
 					},
 				};
 			}
@@ -85,16 +95,17 @@ namespace crimild {
 
 		/**
 		   \todo Move vkEnumerate* code to templates? Maybe using a lambda for the actual function?
+		   \todo Use a single command buffer for transitions and copy of buffers/textures. Create setup/flush command buffer to execute recorded command instead of synchronous operations		   
 		 */
 		class VulkanSimulation {
 		public:
 			void run( void )
 			{
 				m_vertices = {
-					{ { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
-					{ { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
-					{ { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
-					{ { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f } },
+					{ { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f } },
+					{ { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
+					{ { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+					{ { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } },
 				};
 
 				m_indices = {
@@ -161,6 +172,9 @@ namespace crimild {
 				createGraphicsPipeline();
 				createFramebuffers();
 				createCommandPool();
+				createTextureImage();
+				createTextureImageView();
+				createTextureSampler();
 				createVertexBuffer();
 				createIndexBuffer();
 				createUniformBuffers();
@@ -327,8 +341,14 @@ namespace crimild {
 					auto swapChainSupport = querySwapChainSupport( device );
 					swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
 				}
+
+				VkPhysicalDeviceFeatures supportedFeatures;
+				vkGetPhysicalDeviceFeatures( device, &supportedFeatures );
 				
-				return indices.isComplete() && extensionsSupported && swapChainAdequate;
+				return indices.isComplete()
+					&& extensionsSupported
+					&& swapChainAdequate
+					&& supportedFeatures.samplerAnisotropy;
 			}
 
 			/**
@@ -518,8 +538,9 @@ namespace crimild {
 					queueCreateInfos.push_back( queueCreateInfo );
 				}
 
-				// TODO
-				VkPhysicalDeviceFeatures deviceFeatures = {};
+				VkPhysicalDeviceFeatures deviceFeatures = {
+					.samplerAnisotropy = VK_TRUE,
+				};
 
 				VkDeviceCreateInfo createInfo = {
 					.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -801,30 +822,33 @@ namespace crimild {
 			//@{
 
 		private:
+			VkImageView createImageView( VkImage image, VkFormat format )
+			{
+				auto viewInfo = VkImageViewCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+					.image = image,
+					.viewType = VK_IMAGE_VIEW_TYPE_2D,
+					.format = format,
+					.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.subresourceRange.levelCount = 1,
+					.subresourceRange.baseArrayLayer = 0,
+					.subresourceRange.layerCount = 1,
+				};
+
+				VkImageView imageView;
+				if ( vkCreateImageView( m_device, &viewInfo, nullptr, &imageView ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create image view" );
+				}
+
+				return imageView;
+			}
+			
 			void createImageViews( void )
 			{
 				m_swapChainImageViews.resize( m_swapChainImages.size() );
 				
 				for ( auto i = 0l; i < m_swapChainImages.size(); ++i ) {
-					auto createInfo = VkImageViewCreateInfo {
-						.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-						.image = m_swapChainImages[ i ],
-						.viewType = VK_IMAGE_VIEW_TYPE_2D,
-						.format = m_swapChainImageFormat,
-						.components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
-						.components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
-						.components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
-						.components.a = VK_COMPONENT_SWIZZLE_IDENTITY,
-						.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-						.subresourceRange.baseMipLevel = 0,
-						.subresourceRange.levelCount = 1,
-						.subresourceRange.baseArrayLayer = 0,
-						.subresourceRange.layerCount = 1,
-					};
-
-					if ( vkCreateImageView( m_device, &createInfo, nullptr, &m_swapChainImageViews[ i ] ) != VK_SUCCESS ) {
-						throw RuntimeException( "Failed to create image views" );
-					}
+					m_swapChainImageViews[ i ] = createImageView( m_swapChainImages[ i ], m_swapChainImageFormat );
 				}
 			}
 
@@ -850,10 +874,23 @@ namespace crimild {
 					.pImmutableSamplers = nullptr,
 				};
 
+				auto samplerLayoutBinding = VkDescriptorSetLayoutBinding {
+					.binding = 1,
+					.descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					.pImmutableSamplers = nullptr,
+					.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+				};
+
+				std::array< VkDescriptorSetLayoutBinding, 2 > bindings = {
+					uboLayoutBinding,
+					samplerLayoutBinding,
+				};
+
 				auto layoutInfo = VkDescriptorSetLayoutCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-					.bindingCount = 1,
-					.pBindings = &uboLayoutBinding,
+					.bindingCount = static_cast< uint32_t >( bindings.size() ),
+					.pBindings = bindings.data()
 				};
 
 				if ( vkCreateDescriptorSetLayout( m_device, &layoutInfo, nullptr, &m_descriptorSetLayout ) != VK_SUCCESS ) {
@@ -863,15 +900,21 @@ namespace crimild {
 
 			void createDescriptorPool( void )
 			{
-				auto poolSize = VkDescriptorPoolSize {
-					.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-					.descriptorCount = static_cast< uint32_t >( m_swapChainImages.size() ),
+				std::array< VkDescriptorPoolSize, 2 > poolSizes = {
+					VkDescriptorPoolSize {
+						.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+						.descriptorCount = static_cast< uint32_t >( m_swapChainImages.size() ),
+					},
+					VkDescriptorPoolSize {
+						.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+						.descriptorCount = static_cast< uint32_t >( m_swapChainImages.size() ),
+					},
 				};
-
+				
 				auto poolInfo = VkDescriptorPoolCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-					.poolSizeCount = 1,
-					.pPoolSizes = &poolSize,
+					.poolSizeCount = static_cast< uint32_t >( poolSizes.size() ),
+					.pPoolSizes = poolSizes.data(),
 					.maxSets = static_cast< uint32_t >( m_swapChainImages.size() ),
 				};
 
@@ -904,19 +947,40 @@ namespace crimild {
 						.range = sizeof( UniformBufferObject ),
 					};
 
-					auto descriptorWrite = VkWriteDescriptorSet {
-						.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-						.dstSet = m_descriptorSets[ i ],
-						.dstBinding = 0,
-						.dstArrayElement = 0,
-						.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-						.descriptorCount = 1,
-						.pBufferInfo = &bufferInfo,
-						.pImageInfo = nullptr,
-						.pTexelBufferView = nullptr,
+					auto imageInfo = VkDescriptorImageInfo {
+						.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+						.imageView = m_textureImageView,
+						.sampler = m_textureSampler,
 					};
 
-					vkUpdateDescriptorSets( m_device, 1, &descriptorWrite, 0, nullptr );
+					std::array< VkWriteDescriptorSet, 2 > descriptorWrites {
+						VkWriteDescriptorSet {
+							.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+							.dstSet = m_descriptorSets[ i ],
+							.dstBinding = 0,
+							.dstArrayElement = 0,
+							.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+							.descriptorCount = 1,
+							.pBufferInfo = &bufferInfo,
+						},
+						VkWriteDescriptorSet {
+							.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+							.dstSet = m_descriptorSets[ i ],
+							.dstBinding = 1,
+							.dstArrayElement = 0,
+							.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+							.descriptorCount = 1,
+							.pImageInfo = &imageInfo,
+						},
+					};
+
+					vkUpdateDescriptorSets(
+						m_device,
+						static_cast< uint32_t >( descriptorWrites.size() ),
+						descriptorWrites.data(),
+						0,
+						nullptr
+					);
 				}
 			}
 
@@ -1342,7 +1406,8 @@ namespace crimild {
 			void copyBuffer( VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size )
 			{
 				// TODO: might be better to create a different pool for coping buffers
-				
+
+				/*
 				auto allocInfo = VkCommandBufferAllocateInfo {
 					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -1359,6 +1424,9 @@ namespace crimild {
 				};
 
 				vkBeginCommandBuffer( commandBuffer, &beginInfo );
+				*/
+
+				auto commandBuffer = beginSingleTimeCommands();
 
 				auto copyRegion = VkBufferCopy {
 					.srcOffset = 0,
@@ -1367,6 +1435,10 @@ namespace crimild {
 				};
 
 				vkCmdCopyBuffer( commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion );
+
+				endSingleTimeCommands( commandBuffer );
+
+				/*
 
 				vkEndCommandBuffer( commandBuffer );
 
@@ -1380,6 +1452,7 @@ namespace crimild {
 				vkQueueWaitIdle( m_graphicsQueue );
 
 				vkFreeCommandBuffers( m_device, m_commandPool, 1, &commandBuffer );
+				*/
 			}
 
 			void createVertexBuffer( void )
@@ -1483,6 +1556,7 @@ namespace crimild {
 					return t.computeModelMatrix();
 				}( time );
 
+				// TODO: Move this to Matrix
 				auto lookAt = []( const Vector3f &eye, const Vector3f &target, const Vector3f &up ) -> Matrix4f {
 					auto z = ( target - eye ).getNormalized();
 					auto y = up.getNormalized();
@@ -1498,12 +1572,12 @@ namespace crimild {
 					);
 				};
 
-				// View
-				ubo.view = lookAt(
-					Vector3f( 2.0f, 2.0f, 2.0f ),
-					Vector3f( 0.0f, 0.0f, 0.0f ),
-					Vector3f( 0.0f, 1.0f, 0.0f )
-				);
+				ubo.view = []() {
+					Transformation t;
+					t.setTranslate( 0.0f, 0.0f, 2.0f );
+					t.lookAt( Vector3f::ZERO, Vector3f::UNIT_Y );
+					return t.computeModelMatrix().getInverse();
+				}();
 
 				// Projection
 				ubo.proj = []( float width, float height ) {
@@ -1545,6 +1619,43 @@ namespace crimild {
 			//@{
 
 		private:
+			VkCommandBuffer beginSingleTimeCommands( void )
+			{
+				auto allocInfo = VkCommandBufferAllocateInfo {
+					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+					.commandPool = m_commandPool,
+					.commandBufferCount = 1,
+				};
+
+				VkCommandBuffer commandBuffer;
+				vkAllocateCommandBuffers( m_device, &allocInfo, &commandBuffer );
+
+				auto beginInfo = VkCommandBufferBeginInfo {
+					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+					.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+				};
+
+				vkBeginCommandBuffer( commandBuffer, &beginInfo );
+
+				return commandBuffer;
+			}
+
+			void endSingleTimeCommands( VkCommandBuffer commandBuffer )
+			{
+				vkEndCommandBuffer( commandBuffer );
+				
+				auto submitInfo = VkSubmitInfo {
+					.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+					.commandBufferCount = 1,
+					.pCommandBuffers = &commandBuffer,
+				};
+
+				vkQueueSubmit( m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE );
+				vkQueueWaitIdle( m_graphicsQueue );
+				vkFreeCommandBuffers( m_device, m_commandPool, 1, &commandBuffer );
+			}
+			
 			void createCommandBuffers( void )
 			{
 				m_commandBuffers.resize( m_swapChainFramebuffers.size() );
@@ -1778,6 +1889,258 @@ namespace crimild {
 			//@}
 
 			/**
+			   \name Textures
+			 */
+			//@{
+
+		private:
+			// TODO: use an image descriptor?
+			void createImage(
+				uint32_t width,
+				uint32_t height,
+				VkFormat format,
+				VkImageTiling tiling,
+				VkImageUsageFlags usage,
+				VkMemoryPropertyFlags properties,
+				VkImage &image,
+				VkDeviceMemory &imageMemory )
+			{
+				auto imageInfo = VkImageCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+					.imageType = VK_IMAGE_TYPE_2D,
+					.extent.width = width,
+					.extent.height = height,
+					.extent.depth = 1,
+					.mipLevels = 1,
+					.arrayLayers = 1,
+					// Use same format for texels as the pixels in the buffer or copy will fail
+					.format = format,
+					.tiling = tiling,
+					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.usage = usage,
+					.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+					.samples = VK_SAMPLE_COUNT_1_BIT,
+					.flags = 0,
+				};
+
+				if ( vkCreateImage( m_device, &imageInfo, nullptr, &image ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create image" );
+				}
+
+				VkMemoryRequirements memRequirements;
+				vkGetImageMemoryRequirements( m_device, m_textureImage, &memRequirements );
+
+				auto allocInfo = VkMemoryAllocateInfo {
+					.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+					.allocationSize = memRequirements.size,
+					.memoryTypeIndex = findMemoryType( memRequirements.memoryTypeBits, properties ),
+				};
+
+				if ( vkAllocateMemory( m_device, &allocInfo, nullptr, &imageMemory ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to allocate image memory" );
+				}
+
+				vkBindImageMemory( m_device, image, imageMemory, 0 );
+				
+			}
+			
+			void createTextureImage( void )
+			{
+				int texWidth, texHeight, texChannels;
+				auto pixels = stbi_load( "textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha );
+				auto imageSize = texWidth * texHeight * 4;
+
+				if ( !pixels ) {
+					throw RuntimeException( "Failed to load texture image" );
+				}
+
+				// Use a staging buffer instead of a staging image which should be more efficient
+				VkBuffer stagingBuffer;
+				VkDeviceMemory stagingBufferMemory;
+				createBuffer(
+					imageSize,
+					VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					stagingBuffer,
+					stagingBufferMemory
+				);
+
+				void *data;
+				vkMapMemory( m_device, stagingBufferMemory, 0, imageSize, 0, &data );
+				memcpy( data, pixels, static_cast< size_t >( imageSize ) );
+				vkUnmapMemory( m_device, stagingBufferMemory );
+
+				// Cleanup original pixel data
+				stbi_image_free( pixels );
+
+				createImage(
+					texWidth,
+					texHeight,
+					VK_FORMAT_R8G8B8A8_UNORM,
+					VK_IMAGE_TILING_OPTIMAL,
+					VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+					m_textureImage,
+					m_textureImageMemory
+				);
+
+				// Copy staging buffer to texture image
+				transitionImageLayout(
+					m_textureImage,
+					VK_FORMAT_R8G8B8A8_UNORM,
+					VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+				);
+				copyBufferToImage(
+					stagingBuffer,
+					m_textureImage,
+					static_cast< uint32_t >( texWidth ),
+					static_cast< uint32_t >( texHeight )
+				);
+
+				// Prepare image for shader access
+				transitionImageLayout(
+					m_textureImage,
+					VK_FORMAT_R8G8B8A8_UNORM,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				);
+
+				// cleanup
+				vkDestroyBuffer( m_device, stagingBuffer, nullptr );
+				vkFreeMemory( m_device, stagingBufferMemory, nullptr );
+			}
+
+			void transitionImageLayout(
+				VkImage image,
+				VkFormat format,
+				VkImageLayout oldLayout,
+				VkImageLayout newLayout )
+			{
+				auto commandBuffer = beginSingleTimeCommands();
+
+				auto barrier = VkImageMemoryBarrier {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+					.oldLayout = oldLayout,
+					.newLayout = newLayout,
+					// we don't want to transfer queue family ownership
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = image,
+					.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.subresourceRange.baseMipLevel = 0,
+					.subresourceRange.levelCount = 1,
+					.subresourceRange.baseArrayLayer = 0,
+					.subresourceRange.layerCount = 1,
+					.srcAccessMask = 0, // TODO
+					.dstAccessMask = 0, // TODO
+				};
+
+				// Transition barrier masks
+				VkPipelineStageFlags sourceStage;
+				VkPipelineStageFlags destinationStage;
+
+				if ( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ) {
+					barrier.srcAccessMask = 0;
+					barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+					sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+					destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+				}
+				else if ( oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ) {
+					barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+					barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+					sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+					destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+				}
+				else {
+					throw std::invalid_argument( "Unsupported layout transition" );
+				}
+
+				vkCmdPipelineBarrier(
+					commandBuffer,
+					sourceStage,
+					destinationStage,
+					0,
+					0,
+					nullptr,
+					0,
+					nullptr,
+					1,
+					&barrier
+				);
+
+				endSingleTimeCommands( commandBuffer );
+			}
+
+			void copyBufferToImage( VkBuffer buffer, VkImage image, uint32_t width, uint32_t height )
+			{
+				auto commandBuffer = beginSingleTimeCommands();
+
+				auto region = VkBufferImageCopy {
+					.bufferOffset = 0,
+					.bufferRowLength = 0,
+					.bufferImageHeight = 0,
+					.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.imageSubresource.mipLevel = 0,
+					.imageSubresource.baseArrayLayer = 0,
+					.imageSubresource.layerCount = 1,
+					.imageOffset = { 0, 0, 0 },
+					.imageExtent = { width, height, 1 },
+				};
+
+				vkCmdCopyBufferToImage(
+					commandBuffer,
+					buffer,
+					image,
+					// Assume image has already been transitioned to an optimal layout for copying pixels
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					1,
+					&region
+				);
+
+				endSingleTimeCommands( commandBuffer );
+			}
+
+			void createTextureImageView( void )
+			{
+				m_textureImageView = createImageView( m_textureImage, VK_FORMAT_R8G8B8A8_UNORM );
+			}
+
+			void createTextureSampler( void )
+			{
+				auto samplerInfo = VkSamplerCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+					.magFilter = VK_FILTER_LINEAR,
+					.minFilter = VK_FILTER_LINEAR,
+					.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+					.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+					.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+					.anisotropyEnable = VK_TRUE,
+					.maxAnisotropy = 16,
+					.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+					.unnormalizedCoordinates = VK_FALSE,
+					.compareEnable = VK_FALSE,
+					.compareOp = VK_COMPARE_OP_ALWAYS,
+					.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+					.mipLodBias = 0.0f,
+					.minLod = 0.0f,
+					.maxLod = 0.0f,
+				};
+
+				if ( vkCreateSampler( m_device, &samplerInfo, nullptr, &m_textureSampler ) != VK_SUCCESS ) {
+					throw RuntimeException( "Failed to create texture sampler" );
+				}
+			}
+
+		private:
+			VkImage m_textureImage;
+			VkDeviceMemory m_textureImageMemory;
+			VkImageView m_textureImageView;
+			VkSampler m_textureSampler;
+
+			//@}
+
+			/**
 			   \name Cleanup
 			*/
 			//@{
@@ -1786,6 +2149,11 @@ namespace crimild {
 			void cleanup( void )
 			{
 				cleanupSwapChain();
+
+				vkDestroySampler( m_device, m_textureSampler, nullptr );
+				vkDestroyImageView( m_device, m_textureImageView, nullptr );
+				vkDestroyImage( m_device, m_textureImage, nullptr );
+				vkFreeMemory( m_device, m_textureImageMemory, nullptr );
 
 				vkDestroyDescriptorSetLayout( m_device, m_descriptorSetLayout, nullptr );
 
