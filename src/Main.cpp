@@ -49,7 +49,7 @@ namespace crimild {
 	namespace vulkan {
 
 		struct Vertex {
-			Vector2f pos;
+			Vector3f pos;
 			Vector3f color;
 			Vector2f texCoord;
 
@@ -68,7 +68,7 @@ namespace crimild {
 					VkVertexInputAttributeDescription {
 						.binding = 0,
 						.location = 0,
-						.format = VK_FORMAT_R32G32_SFLOAT,
+						.format = VK_FORMAT_R32G32B32_SFLOAT,
 						.offset = offsetof( Vertex, pos ),
 					},
 					VkVertexInputAttributeDescription {
@@ -102,15 +102,20 @@ namespace crimild {
 			void run( void )
 			{
 				m_vertices = {
-					{ { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f } },
-					{ { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
-					{ { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
-					{ { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } },
+					{ { -0.5f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f } },
+					{ { 0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
+					{ { 0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+					{ { -0.5f, 0.5f, 0.0f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } },
+					
+					{ { -0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f } },
+					{ { 0.5f, -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
+					{ { 0.5f, 0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+					{ { -0.5f, 0.5f, -0.5f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } },
 				};
 
 				m_indices = {
-					0, 1, 2,
-					2, 3, 0,
+					0, 1, 2, 2, 3, 0,
+					4, 5, 6, 6, 7, 4,
 				};
 
 				if ( !initWindow() ) {
@@ -170,8 +175,9 @@ namespace crimild {
 				createRenderPass();
 				createDescriptorSetLayout();
 				createGraphicsPipeline();
-				createFramebuffers();
 				createCommandPool();
+				createDepthResources();
+				createFramebuffers();
 				createTextureImage();
 				createTextureImageView();
 				createTextureSampler();
@@ -757,6 +763,10 @@ namespace crimild {
 
 			void cleanupSwapChain( void )
 			{
+				vkDestroyImageView( m_device, m_depthImageView, nullptr );
+				vkDestroyImage( m_device, m_depthImage, nullptr );
+				vkFreeMemory( m_device, m_depthImageMemory, nullptr );
+				
 				for ( auto i = 0l; i < m_swapChainFramebuffers.size(); i++ ) {
 					vkDestroyFramebuffer( m_device, m_swapChainFramebuffers[ i ], nullptr );
 				}
@@ -797,10 +807,13 @@ namespace crimild {
 				
 				vkDeviceWaitIdle( m_device );
 
+				cleanupSwapChain();
+
 				createSwapChain();
 				createImageViews();
 				createRenderPass();
 				createGraphicsPipeline();
+				createDepthResources();
 				createFramebuffers();
 				createUniformBuffers();
 				createDescriptorPool();
@@ -822,14 +835,14 @@ namespace crimild {
 			//@{
 
 		private:
-			VkImageView createImageView( VkImage image, VkFormat format )
+			VkImageView createImageView( VkImage image, VkFormat format, VkImageAspectFlags aspectFlags )
 			{
 				auto viewInfo = VkImageViewCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 					.image = image,
 					.viewType = VK_IMAGE_VIEW_TYPE_2D,
 					.format = format,
-					.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.subresourceRange.aspectMask = aspectFlags,
 					.subresourceRange.levelCount = 1,
 					.subresourceRange.baseArrayLayer = 0,
 					.subresourceRange.layerCount = 1,
@@ -848,12 +861,112 @@ namespace crimild {
 				m_swapChainImageViews.resize( m_swapChainImages.size() );
 				
 				for ( auto i = 0l; i < m_swapChainImages.size(); ++i ) {
-					m_swapChainImageViews[ i ] = createImageView( m_swapChainImages[ i ], m_swapChainImageFormat );
+					m_swapChainImageViews[ i ] = createImageView(
+						m_swapChainImages[ i ],
+						m_swapChainImageFormat,
+						VK_IMAGE_ASPECT_COLOR_BIT
+					);
 				}
 			}
 
 		private:
 			std::vector< VkImageView > m_swapChainImageViews;
+
+			//@}
+
+			/**
+			   \name Depth/Stencil
+			 */
+			//@{
+		private:
+			
+			/**
+			   \brief Find a supported format based on the desired ones
+			   \param candidates List of candidate formats ordered from most desirable to least desirable
+			   \param tiling Tiling mode
+			   \param features Features
+			   \return Supported format
+			   \see createDepthResources()
+			 */
+			VkFormat findSupportedFormat( const std::vector< VkFormat > &candidates, VkImageTiling tiling, VkFormatFeatureFlags features ) const
+			{
+				for ( auto format : candidates ) {
+					VkFormatProperties props;
+					vkGetPhysicalDeviceFormatProperties( m_physicalDevice, format, &props );
+
+					if ( tiling == VK_IMAGE_TILING_LINEAR && ( props.linearTilingFeatures & features ) == features ) {
+						return format;
+					}
+					else if ( tiling == VK_IMAGE_TILING_OPTIMAL && ( props.optimalTilingFeatures & features ) == features ) {
+						return format;
+					}
+				}
+
+				throw RuntimeException( "Failed to find supported format" );
+			}
+
+			/**
+			   \brief Finds a format with a depth component that can be used as depth attachment
+			   \see createDepthResource()
+			 */
+			VkFormat findDepthFormat( void ) const noexcept
+			{
+				return findSupportedFormat(
+					{
+						VK_FORMAT_D32_SFLOAT,
+						VK_FORMAT_D32_SFLOAT_S8_UINT,
+						VK_FORMAT_D24_UNORM_S8_UINT
+					},
+					VK_IMAGE_TILING_OPTIMAL,
+					VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+				);
+			}
+
+			/**
+			   \brief Check if a chosed depth format contains a stencil component
+			   \see createDepthResource()
+			 */
+			static bool hasStencilComponent( VkFormat format ) noexcept
+			{
+				return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
+			}
+			
+			void createDepthResources( void ) noexcept
+			{
+				auto depthFormat = findDepthFormat();
+
+				createImage(
+					m_swapChainExtent.width,
+					m_swapChainExtent.height,
+					depthFormat,
+					VK_IMAGE_TILING_OPTIMAL,
+					VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+					m_depthImage,
+					m_depthImageMemory
+				);
+				
+				m_depthImageView = createImageView(
+					m_depthImage,
+					depthFormat,
+					VK_IMAGE_ASPECT_DEPTH_BIT
+				);
+
+				// The transition to a suitable layout happens only once, so do it here instead of
+				// in a render pass
+				transitionImageLayout(
+					m_depthImage,
+					depthFormat,
+					VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+				);
+				
+			}
+
+		private:
+			VkImage m_depthImage;
+			VkDeviceMemory m_depthImageMemory;
+			VkImageView m_depthImageView;
 
 			//@}
 
@@ -1099,7 +1212,20 @@ namespace crimild {
 					.alphaToOneEnable = VK_FALSE,
 				};
 
-				// Depth and Stencil testing (TBD)
+				// Depth and Stencil testing
+
+				auto depthStencil = VkPipelineDepthStencilStateCreateInfo {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+					.depthTestEnable = VK_TRUE,
+					.depthWriteEnable = VK_TRUE,
+					.depthCompareOp = VK_COMPARE_OP_LESS,
+					.depthBoundsTestEnable = VK_FALSE,
+					.minDepthBounds = 0.0f,
+					.maxDepthBounds = 1.0f,
+					.stencilTestEnable = VK_FALSE,
+					.front = {},
+					.back = {},
+				};
 
 				// Color Blending
 
@@ -1151,7 +1277,7 @@ namespace crimild {
 					.pViewportState = &viewportState,
 					.pRasterizationState = &rasterizer,
 					.pMultisampleState = &multisampling,
-					.pDepthStencilState = nullptr,
+					.pDepthStencilState = &depthStencil,
 					.pColorBlendState = &colorBlending,
 					.pDynamicState = nullptr,
 					.layout = m_pipelineLayout,
@@ -1230,7 +1356,7 @@ namespace crimild {
 
 			void createRenderPass( void )
 			{
-				// Attachment description
+				// Color Attachment description
 				
 				auto colorAttachment = VkAttachmentDescription {
 					.format = m_swapChainImageFormat,
@@ -1243,17 +1369,35 @@ namespace crimild {
 					.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 				};
 
-				// Subpasses and attachment references
-
 				auto colorAttachmentRef = VkAttachmentReference {
 					.attachment = 0,
 					.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 				};
 
+				// Depth Attachment descriptor
+				auto depthAttachment = VkAttachmentDescription {
+					.format = findDepthFormat(),
+					.samples = VK_SAMPLE_COUNT_1_BIT,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+					.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+				};
+
+				auto depthAttachmentRef = VkAttachmentReference {
+					.attachment = 1,
+					.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+				};
+
+				// Subpasses and attachment references
+
 				auto subpass = VkSubpassDescription {
 					.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 					.colorAttachmentCount = 1,
 					.pColorAttachments = &colorAttachmentRef,
+					.pDepthStencilAttachment = &depthAttachmentRef,
 				};
 
 				// Subpass dependencies
@@ -1269,10 +1413,15 @@ namespace crimild {
 				
 				// Render Pass
 
+				auto attachments = std::array< VkAttachmentDescription, 2 > {
+					colorAttachment,
+					depthAttachment,
+				};
+
 				auto renderPassInfo = VkRenderPassCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-					.attachmentCount = 1,
-					.pAttachments = &colorAttachment,
+					.attachmentCount = static_cast< uint32_t >( attachments.size() ),
+					.pAttachments = attachments.data(),
 					.subpassCount = 1,
 					.pSubpasses = &subpass,
 					.dependencyCount = 1,
@@ -1301,15 +1450,16 @@ namespace crimild {
 				m_swapChainFramebuffers.resize( m_swapChainImageViews.size() );
 
 				for ( auto i = 0l; i < m_swapChainImageViews.size(); ++i ) {
-					VkImageView attachments[] = {
+					auto attachments = std::array< VkImageView, 2 > {
 						m_swapChainImageViews[ i ],
+						m_depthImageView,
 					};
 					
 					auto framebufferInfo = VkFramebufferCreateInfo {
 						.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 						.renderPass = m_renderPass,
-						.attachmentCount = 1,
-						.pAttachments = attachments,
+						.attachmentCount = static_cast< uint32_t >( attachments.size() ),
+						.pAttachments = attachments.data(),
 						.width = m_swapChainExtent.width,
 						.height = m_swapChainExtent.height,
 						.layers = 1,
@@ -1407,25 +1557,6 @@ namespace crimild {
 			{
 				// TODO: might be better to create a different pool for coping buffers
 
-				/*
-				auto allocInfo = VkCommandBufferAllocateInfo {
-					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-					.commandPool = m_commandPool,
-					.commandBufferCount = 1,
-				};
-
-				VkCommandBuffer commandBuffer;
-				vkAllocateCommandBuffers( m_device, &allocInfo, &commandBuffer );
-
-				auto beginInfo = VkCommandBufferBeginInfo {
-					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-					.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-				};
-
-				vkBeginCommandBuffer( commandBuffer, &beginInfo );
-				*/
-
 				auto commandBuffer = beginSingleTimeCommands();
 
 				auto copyRegion = VkBufferCopy {
@@ -1437,22 +1568,6 @@ namespace crimild {
 				vkCmdCopyBuffer( commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion );
 
 				endSingleTimeCommands( commandBuffer );
-
-				/*
-
-				vkEndCommandBuffer( commandBuffer );
-
-				auto submitInfo = VkSubmitInfo {
-					.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-					.commandBufferCount = 1,
-					.pCommandBuffers = &commandBuffer,
-				};
-
-				vkQueueSubmit( m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE );
-				vkQueueWaitIdle( m_graphicsQueue );
-
-				vkFreeCommandBuffers( m_device, m_commandPool, 1, &commandBuffer );
-				*/
 			}
 
 			void createVertexBuffer( void )
@@ -1574,7 +1689,7 @@ namespace crimild {
 
 				ubo.view = []() {
 					Transformation t;
-					t.setTranslate( 0.0f, 0.0f, 2.0f );
+					t.setTranslate( 3.0f, 3.0f, 3.0f );
 					t.lookAt( Vector3f::ZERO, Vector3f::UNIT_Y );
 					return t.computeModelMatrix().getInverse();
 				}();
@@ -1586,11 +1701,16 @@ namespace crimild {
 
 					// Invert Y-axis
 					// This also needs to set front face as counter-clockwise for culling
-					// when configuring pipeline
+					// when configuring pipeline.
+					// In addition, we need to use a depth range of [0, 1] for Vulkan
 					// Also: https://matthewwellings.com/blog/the-new-vulkan-coordinate-system/
-					proj[ 5 ] *= -1.0f;
-
-					return proj;
+					static const auto CLIP_CORRECTION = Matrix4f(
+						1.0f, 0.0f, 0.0f, 0.0f,
+						0.0f, -1.0f, 0.0f, 0.0f,
+						0.0f, 0.0f, 0.5f, 0.5f,
+						0.0f, 0.0f, 0.0f, 1.0f
+					).getTranspose(); // TODO: why do I need to transpose this?
+					return CLIP_CORRECTION * proj;
 				}( m_swapChainExtent.width, m_swapChainExtent.height );
 				
 				void *data;
@@ -1682,7 +1802,14 @@ namespace crimild {
 						throw RuntimeException( "Failed to begin recording command buffer" );
 					}
 
-					auto clearColor = VkClearValue { 0.0f, 0.0f, 0.0f, 1.0f };
+					auto clearValues = std::array< VkClearValue, 2 > {
+						VkClearValue {
+							.color = { 0.0f, 0.0f, 0.0f, 1.0f },
+						},
+						VkClearValue {
+							.depthStencil = { 1.0f, 0 },
+						},
+					};
 
 					auto renderPassInfo = VkRenderPassBeginInfo {
 						.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -1690,8 +1817,8 @@ namespace crimild {
 						.framebuffer = m_swapChainFramebuffers[ i ],
 						.renderArea.offset = { 0, 0 },
 						.renderArea.extent = m_swapChainExtent,
-						.clearValueCount = 1,
-						.pClearValues = &clearColor,
+						.clearValueCount = static_cast< uint32_t >( clearValues.size() ),
+						.pClearValues = clearValues.data(),
 					};
 
 					vkCmdBeginRenderPass( m_commandBuffers[ i ], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE );
@@ -1928,7 +2055,7 @@ namespace crimild {
 				}
 
 				VkMemoryRequirements memRequirements;
-				vkGetImageMemoryRequirements( m_device, m_textureImage, &memRequirements );
+				vkGetImageMemoryRequirements( m_device, image, &memRequirements );
 
 				auto allocInfo = VkMemoryAllocateInfo {
 					.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -1941,7 +2068,6 @@ namespace crimild {
 				}
 
 				vkBindImageMemory( m_device, image, imageMemory, 0 );
-				
 			}
 			
 			void createTextureImage( void )
@@ -2040,6 +2166,13 @@ namespace crimild {
 				VkPipelineStageFlags sourceStage;
 				VkPipelineStageFlags destinationStage;
 
+				if ( newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ) {
+					barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+					if ( hasStencilComponent( format ) ) {
+						barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+					}
+				}
+
 				if ( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ) {
 					barrier.srcAccessMask = 0;
 					barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -2051,6 +2184,12 @@ namespace crimild {
 					barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 					sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 					destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+				}
+				else if ( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ) {
+					barrier.srcAccessMask = 0;
+					barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+					sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+					destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 				}
 				else {
 					throw std::invalid_argument( "Unsupported layout transition" );
@@ -2103,7 +2242,11 @@ namespace crimild {
 
 			void createTextureImageView( void )
 			{
-				m_textureImageView = createImageView( m_textureImage, VK_FORMAT_R8G8B8A8_UNORM );
+				m_textureImageView = createImageView(
+					m_textureImage,
+					VK_FORMAT_R8G8B8A8_UNORM,
+					VK_IMAGE_ASPECT_COLOR_BIT
+				);
 			}
 
 			void createTextureSampler( void )
