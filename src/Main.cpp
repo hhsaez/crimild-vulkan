@@ -34,6 +34,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "tiny_obj_loader.h"
+
 #if !defined( NDEBUG )
 #define CRIMILD_DEBUG true
 #endif
@@ -41,8 +44,12 @@
 #include <set>
 #include <fstream>
 #include <array>
+#include <unordered_map>
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
+
+const std::string MODEL_PATH = "assets/models/chalet/chalet.obj";
+const std::string TEXTURE_PATH = "assets/models/chalet/chalet.tga";
 
 namespace crimild {
 
@@ -85,6 +92,12 @@ namespace crimild {
 					},
 				};
 			}
+
+			bool operator==( const Vertex &other ) const
+			{
+				return pos == other.pos && color == other.color && texCoord == other.texCoord;
+			}
+
 		};
 
 		struct UniformBufferObject {
@@ -92,6 +105,67 @@ namespace crimild {
 			Matrix4f view;
 			Matrix4f proj;
 		};
+
+	}
+
+}
+
+namespace crimild {
+
+	namespace utils {
+
+		/**
+		   \see https://stackoverflow.com/a/35991300
+		*/
+		template< typename T >
+		inline void hash_combine( std::size_t &seed, const T &v )
+		{
+			std::hash< T > hasher;
+			seed ^= hasher( v ) + 0x934779b9 + ( seed << 6 ) + ( seed >> 2 );
+		}
+
+	}
+
+}
+
+namespace std {
+
+	template<> struct hash< crimild::Vector3f > {
+		size_t operator()( crimild::Vector3f const &v ) const {
+			size_t seed = 0;
+			std::hash< float > hasher;
+			crimild::utils::hash_combine( seed, hasher( v.x() ) );
+			crimild::utils::hash_combine( seed, hasher( v.y() ) );
+			crimild::utils::hash_combine( seed, hasher( v.z() ) );
+			return seed;
+		}
+	};
+
+	template<> struct hash< crimild::Vector2f > {
+		size_t operator()( crimild::Vector2f const &v ) const {
+			size_t seed = 0;
+			std::hash< float > hasher;
+			crimild::utils::hash_combine( seed, hasher( v.x() ) );
+			crimild::utils::hash_combine( seed, hasher( v.y() ) );
+			return seed;
+		}
+	};
+
+	template<> struct hash< crimild::vulkan::Vertex > {
+		size_t operator()( crimild::vulkan::Vertex const &vertex ) const {
+			size_t seed = 0;
+			crimild::utils::hash_combine( seed, std::hash< crimild::Vector3f >()( vertex.pos ) );
+			crimild::utils::hash_combine( seed, std::hash< crimild::Vector3f >()( vertex.color ) );
+			crimild::utils::hash_combine( seed, std::hash< crimild::Vector2f >()( vertex.texCoord ) );
+			return seed;
+		}
+	};
+
+}
+
+namespace crimild {
+
+	namespace vulkan {
 
 		/**
 		   \todo Move vkEnumerate* code to templates? Maybe using a lambda for the actual function?
@@ -101,23 +175,6 @@ namespace crimild {
 		public:
 			void run( void )
 			{
-				m_vertices = {
-					{ { -0.5f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f } },
-					{ { 0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
-					{ { 0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
-					{ { -0.5f, 0.5f, 0.0f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } },
-					
-					{ { -0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f } },
-					{ { 0.5f, -0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
-					{ { 0.5f, 0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
-					{ { -0.5f, 0.5f, -0.5f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } },
-				};
-
-				m_indices = {
-					0, 1, 2, 2, 3, 0,
-					4, 5, 6, 6, 7, 4,
-				};
-
 				if ( !initWindow() ) {
 					return;
 				}
@@ -181,6 +238,7 @@ namespace crimild {
 				createTextureImage();
 				createTextureImageView();
 				createTextureSampler();
+				loadModel();
 				createVertexBuffer();
 				createIndexBuffer();
 				createUniformBuffers();
@@ -1112,8 +1170,8 @@ namespace crimild {
 		public:
 			void createGraphicsPipeline( void )
 			{
-				auto vertShaderCode = readFile( "shaders/vert.spv" );
-				auto fragShaderCode = readFile( "shaders/frag.spv" );
+				auto vertShaderCode = readFile( "assets/shaders/vert.spv" );
+				auto fragShaderCode = readFile( "assets/shaders/frag.spv" );
 
 				// Shader Modules
 				auto vertShaderModule = createShaderModule( vertShaderCode );
@@ -1666,8 +1724,12 @@ namespace crimild {
 
 				// Model
 				ubo.model = []( crimild::Real32 time ) {
+					Transformation t0;
+					t0.rotate().fromAxisAngle( Vector3f::UNIT_X, -Numericf::HALF_PI );
+					Transformation t1;
+					t1.rotate().fromAxisAngle( Vector3f::UNIT_Z, time * 35.0f * Numericf::DEG_TO_RAD );
 					Transformation t;
-					t.rotate().fromAxisAngle( Vector3f::UNIT_Z, time * 35.0f * Numericf::DEG_TO_RAD );
+					t.computeFrom( t0, t1 );
 					return t.computeModelMatrix();
 				}( time );
 
@@ -1689,8 +1751,8 @@ namespace crimild {
 
 				ubo.view = []() {
 					Transformation t;
-					t.setTranslate( 3.0f, 3.0f, 3.0f );
-					t.lookAt( Vector3f::ZERO, Vector3f::UNIT_Y );
+					t.setTranslate( 4.0f, 4.0f, 4.0f );
+					t.lookAt( 0.5f * Vector3f::UNIT_Y, Vector3f::UNIT_Y );
 					return t.computeModelMatrix().getInverse();
 				}();
 
@@ -1721,7 +1783,7 @@ namespace crimild {
 
 		private:
 			std::vector< Vertex > m_vertices;
-			std::vector< uint16_t > m_indices;
+			std::vector< uint32_t > m_indices;
 
 			VkBuffer m_vertexBuffer;
 			VkDeviceMemory m_vertexBufferMemory;
@@ -1831,7 +1893,7 @@ namespace crimild {
 					vkCmdBindVertexBuffers( m_commandBuffers[ i ], 0, 1, vertexBuffers, offsets );
 
 					// bind index buffer
-					vkCmdBindIndexBuffer( m_commandBuffers[ i ], m_indexBuffer, 0, VK_INDEX_TYPE_UINT16 );
+					vkCmdBindIndexBuffer( m_commandBuffers[ i ], m_indexBuffer, 0, VK_INDEX_TYPE_UINT32 );
 
 					// bind uniform buffers
 					vkCmdBindDescriptorSets(
@@ -2073,7 +2135,7 @@ namespace crimild {
 			void createTextureImage( void )
 			{
 				int texWidth, texHeight, texChannels;
-				auto pixels = stbi_load( "textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha );
+				auto pixels = stbi_load( TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha );
 				auto imageSize = texWidth * texHeight * 4;
 
 				if ( !pixels ) {
@@ -2280,6 +2342,57 @@ namespace crimild {
 			VkDeviceMemory m_textureImageMemory;
 			VkImageView m_textureImageView;
 			VkSampler m_textureSampler;
+
+			//@}
+
+			/**
+			   \name Model loading
+			 */
+			//@{
+
+		private:
+			void loadModel( void )
+			{
+				tinyobj::attrib_t attrib;
+				std::vector< tinyobj::shape_t > shapes;
+				std::vector< tinyobj::material_t > materials;
+				std::string err;
+
+				if ( !tinyobj::LoadObj(
+					&attrib,
+					&shapes,
+					&materials,
+					&err,
+					MODEL_PATH.c_str() ) ) {
+					throw RuntimeException( err );
+				}
+
+				std::unordered_map< Vertex, uint32_t > uniqueVertices = {};
+
+				for ( const auto &shape : shapes ) {
+					for ( const auto &index : shape.mesh.indices ) {
+						auto vertex = Vertex {
+							.pos = Vector3f(
+								attrib.vertices[ 3 * index.vertex_index + 0 ],
+								attrib.vertices[ 3 * index.vertex_index + 1 ],
+								attrib.vertices[ 3 * index.vertex_index + 2 ]
+							),
+							.texCoord = Vector2f(
+								attrib.texcoords[ 2 * index.texcoord_index + 0 ],
+								1.0f - attrib.texcoords[ 2 * index.texcoord_index + 1 ]
+							),
+							.color = Vector3f::ONE,
+						};
+
+						if ( uniqueVertices.count( vertex ) == 0 ) {
+							uniqueVertices[ vertex ] = static_cast< uint32_t >( m_vertices.size() );
+							m_vertices.push_back( vertex );
+						}
+
+						m_indices.push_back( uniqueVertices[ vertex ] );
+					}
+				}
+			}
 
 			//@}
 
