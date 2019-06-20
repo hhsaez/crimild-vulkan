@@ -893,7 +893,7 @@ namespace crimild {
 			//@{
 
 		private:
-			VkImageView createImageView( VkImage image, VkFormat format, VkImageAspectFlags aspectFlags )
+			VkImageView createImageView( VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels )
 			{
 				auto viewInfo = VkImageViewCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -901,7 +901,7 @@ namespace crimild {
 					.viewType = VK_IMAGE_VIEW_TYPE_2D,
 					.format = format,
 					.subresourceRange.aspectMask = aspectFlags,
-					.subresourceRange.levelCount = 1,
+					.subresourceRange.levelCount = mipLevels,
 					.subresourceRange.baseArrayLayer = 0,
 					.subresourceRange.layerCount = 1,
 				};
@@ -922,7 +922,8 @@ namespace crimild {
 					m_swapChainImageViews[ i ] = createImageView(
 						m_swapChainImages[ i ],
 						m_swapChainImageFormat,
-						VK_IMAGE_ASPECT_COLOR_BIT
+						VK_IMAGE_ASPECT_COLOR_BIT,
+						1
 					);
 				}
 			}
@@ -996,6 +997,7 @@ namespace crimild {
 				createImage(
 					m_swapChainExtent.width,
 					m_swapChainExtent.height,
+					1,
 					depthFormat,
 					VK_IMAGE_TILING_OPTIMAL,
 					VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1007,7 +1009,8 @@ namespace crimild {
 				m_depthImageView = createImageView(
 					m_depthImage,
 					depthFormat,
-					VK_IMAGE_ASPECT_DEPTH_BIT
+					VK_IMAGE_ASPECT_DEPTH_BIT,
+					1
 				);
 
 				// The transition to a suitable layout happens only once, so do it here instead of
@@ -1016,7 +1019,8 @@ namespace crimild {
 					m_depthImage,
 					depthFormat,
 					VK_IMAGE_LAYOUT_UNDEFINED,
-					VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+					1
 				);
 				
 			}
@@ -2087,6 +2091,7 @@ namespace crimild {
 			void createImage(
 				uint32_t width,
 				uint32_t height,
+				uint32_t mipLevels,
 				VkFormat format,
 				VkImageTiling tiling,
 				VkImageUsageFlags usage,
@@ -2100,7 +2105,7 @@ namespace crimild {
 					.extent.width = width,
 					.extent.height = height,
 					.extent.depth = 1,
-					.mipLevels = 1,
+					.mipLevels = mipLevels,
 					.arrayLayers = 1,
 					// Use same format for texels as the pixels in the buffer or copy will fail
 					.format = format,
@@ -2142,6 +2147,9 @@ namespace crimild {
 					throw RuntimeException( "Failed to load texture image" );
 				}
 
+				// Compute number of mipmap levels
+				m_mipLevels = static_cast< uint32_t >( std::floor( std::log2( std::max( texWidth, texHeight ) ) ) ) + 1;
+
 				// Use a staging buffer instead of a staging image which should be more efficient
 				VkBuffer stagingBuffer;
 				VkDeviceMemory stagingBufferMemory;
@@ -2164,9 +2172,10 @@ namespace crimild {
 				createImage(
 					texWidth,
 					texHeight,
+					m_mipLevels,
 					VK_FORMAT_R8G8B8A8_UNORM,
 					VK_IMAGE_TILING_OPTIMAL,
-					VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 					m_textureImage,
 					m_textureImageMemory
@@ -2177,7 +2186,8 @@ namespace crimild {
 					m_textureImage,
 					VK_FORMAT_R8G8B8A8_UNORM,
 					VK_IMAGE_LAYOUT_UNDEFINED,
-					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					m_mipLevels
 				);
 				copyBufferToImage(
 					stagingBuffer,
@@ -2186,12 +2196,12 @@ namespace crimild {
 					static_cast< uint32_t >( texHeight )
 				);
 
-				// Prepare image for shader access
-				transitionImageLayout(
+				generateMipmaps(
 					m_textureImage,
 					VK_FORMAT_R8G8B8A8_UNORM,
-					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					texWidth,
+					texHeight,
+					m_mipLevels
 				);
 
 				// cleanup
@@ -2199,11 +2209,140 @@ namespace crimild {
 				vkFreeMemory( m_device, stagingBufferMemory, nullptr );
 			}
 
+			void generateMipmaps(
+				VkImage image,
+				VkFormat imageFormat,
+				int32_t texWidth,
+				int32_t texHeight,
+				uint32_t mipLevels )
+			{
+				// Check if image format supports linear blitting
+				VkFormatProperties formatProperties;
+				vkGetPhysicalDeviceFormatProperties( m_physicalDevice, imageFormat, &formatProperties );
+				if ( !( formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT ) ) {
+					// TODO: either search for an image format that supports linear blitting
+					// Or implement mipmap generation in software (see stb_image_resize)
+					throw RuntimeException( "Texture image format does not support linear blitting" );
+				}
+				
+				auto commandBuffer = beginSingleTimeCommands();
+
+				auto barrier = VkImageMemoryBarrier {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+					.image = image,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.subresourceRange.baseArrayLayer = 0,
+					.subresourceRange.layerCount = 1,
+					.subresourceRange.levelCount = 1,
+				};
+
+				auto mipWidth = texWidth;
+				auto mipHeight = texHeight;
+
+				for ( uint32_t i = 1; i < mipLevels; ++i ) {
+					barrier.subresourceRange.baseMipLevel = i - 1;
+					barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+					barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+					barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+					barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+					vkCmdPipelineBarrier(
+						commandBuffer,
+						VK_PIPELINE_STAGE_TRANSFER_BIT,
+						VK_PIPELINE_STAGE_TRANSFER_BIT,
+						0,
+						0,
+						nullptr,
+						0,
+						nullptr,
+						1,
+						&barrier
+					);
+
+					auto blit = VkImageBlit {
+						.srcOffsets[ 0 ] = { 0, 0, 0 },
+						.srcOffsets[ 1 ] = { mipWidth, mipHeight, 1 },
+						.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.srcSubresource.mipLevel = i - 1,
+						.srcSubresource.baseArrayLayer = 0,
+						.srcSubresource.layerCount = 1,
+						.dstOffsets[ 0 ] = { 0, 0, 0 },
+						.dstOffsets[ 1 ] = {
+							mipWidth > 1 ? mipWidth / 2 : 1,
+							mipHeight > 1 ? mipHeight / 2 : 1,
+							1
+						},
+						.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.dstSubresource.mipLevel = i,
+						.dstSubresource.baseArrayLayer = 0,
+						.dstSubresource.layerCount = 1,
+					};
+
+					vkCmdBlitImage(
+						commandBuffer,
+						image,
+						VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+						image,
+						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						1,
+						&blit,
+						VK_FILTER_LINEAR
+					);
+
+					barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+					barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+					barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+					barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+					vkCmdPipelineBarrier(
+						commandBuffer,
+						VK_PIPELINE_STAGE_TRANSFER_BIT,
+						VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+						0,
+						0,
+						nullptr,
+						0,
+						nullptr,
+						1,
+						&barrier
+					);
+
+					// Handes cases where image is not squared. Make sure neither width nor height is zero
+					if ( mipWidth > 1 ) mipWidth /= 2;
+					if ( mipHeight > 1 ) mipHeight /= 2;
+				}
+
+				// Transition last mip level
+				barrier.subresourceRange.baseMipLevel = mipLevels - 1;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+				vkCmdPipelineBarrier(
+					commandBuffer,
+					VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					0,
+					0,
+					nullptr,
+					0,
+					nullptr,
+					1,
+					&barrier
+				);
+
+				endSingleTimeCommands( commandBuffer );
+			}
+
 			void transitionImageLayout(
 				VkImage image,
 				VkFormat format,
 				VkImageLayout oldLayout,
-				VkImageLayout newLayout )
+				VkImageLayout newLayout,
+				uint32_t mipLevels )
 			{
 				auto commandBuffer = beginSingleTimeCommands();
 
@@ -2217,7 +2356,7 @@ namespace crimild {
 					.image = image,
 					.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 					.subresourceRange.baseMipLevel = 0,
-					.subresourceRange.levelCount = 1,
+					.subresourceRange.levelCount = mipLevels,
 					.subresourceRange.baseArrayLayer = 0,
 					.subresourceRange.layerCount = 1,
 					.srcAccessMask = 0, // TODO
@@ -2307,7 +2446,8 @@ namespace crimild {
 				m_textureImageView = createImageView(
 					m_textureImage,
 					VK_FORMAT_R8G8B8A8_UNORM,
-					VK_IMAGE_ASPECT_COLOR_BIT
+					VK_IMAGE_ASPECT_COLOR_BIT,
+					m_mipLevels
 				);
 			}
 
@@ -2329,7 +2469,7 @@ namespace crimild {
 					.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
 					.mipLodBias = 0.0f,
 					.minLod = 0.0f,
-					.maxLod = 0.0f,
+					.maxLod = static_cast< float >( m_mipLevels ),
 				};
 
 				if ( vkCreateSampler( m_device, &samplerInfo, nullptr, &m_textureSampler ) != VK_SUCCESS ) {
@@ -2338,6 +2478,7 @@ namespace crimild {
 			}
 
 		private:
+			uint32_t m_mipLevels;
 			VkImage m_textureImage;
 			VkDeviceMemory m_textureImageMemory;
 			VkImageView m_textureImageView;
