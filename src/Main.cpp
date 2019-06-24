@@ -46,6 +46,8 @@
 #include <array>
 #include <unordered_map>
 
+#define ENABLE_ROTATION 1
+
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
 const std::string MODEL_PATH = "assets/models/chalet/chalet.obj";
@@ -233,6 +235,7 @@ namespace crimild {
 				createDescriptorSetLayout();
 				createGraphicsPipeline();
 				createCommandPool();
+				createColorResources();
 				createDepthResources();
 				createFramebuffers();
 				createTextureImage();
@@ -386,6 +389,7 @@ namespace crimild {
 				for ( const auto &device : devices ) {
 					if ( isDeviceSuitable( device ) ) {
 						m_physicalDevice = device;
+						m_msaaSamples = getMaxUsableSampleCount();
 						break;
 					}
 				}
@@ -556,8 +560,8 @@ namespace crimild {
 
 		private:
 			GLFWwindow *_window = nullptr;
-			crimild::UInt32 _width = 1028;
-			crimild::UInt32 _height = 768;
+			crimild::UInt32 _width = 1280;
+			crimild::UInt32 _height = 900;
 			
 			VkInstance _instance;
 			crimild::Bool _enableValidationLayers = false;
@@ -821,6 +825,10 @@ namespace crimild {
 
 			void cleanupSwapChain( void )
 			{
+				vkDestroyImageView( m_device, m_colorImageView, nullptr );
+				vkDestroyImage( m_device, m_colorImage, nullptr );
+				vkFreeMemory( m_device, m_colorImageMemory, nullptr );
+				
 				vkDestroyImageView( m_device, m_depthImageView, nullptr );
 				vkDestroyImage( m_device, m_depthImage, nullptr );
 				vkFreeMemory( m_device, m_depthImageMemory, nullptr );
@@ -871,6 +879,7 @@ namespace crimild {
 				createImageViews();
 				createRenderPass();
 				createGraphicsPipeline();
+				createColorResources();
 				createDepthResources();
 				createFramebuffers();
 				createUniformBuffers();
@@ -998,6 +1007,7 @@ namespace crimild {
 					m_swapChainExtent.width,
 					m_swapChainExtent.height,
 					1,
+					m_msaaSamples, //< Must match the one for color resources
 					depthFormat,
 					VK_IMAGE_TILING_OPTIMAL,
 					VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1267,7 +1277,7 @@ namespace crimild {
 				auto multisampling = VkPipelineMultisampleStateCreateInfo {
 					.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 					.sampleShadingEnable = VK_FALSE,
-					.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+					.rasterizationSamples = m_msaaSamples,
 					.minSampleShading = 1.0f,
 					.pSampleMask = nullptr,
 					.alphaToCoverageEnable = VK_FALSE,
@@ -1422,13 +1432,13 @@ namespace crimild {
 				
 				auto colorAttachment = VkAttachmentDescription {
 					.format = m_swapChainImageFormat,
-					.samples = VK_SAMPLE_COUNT_1_BIT,
+					.samples = m_msaaSamples,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 					.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 					.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-					.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+					.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, //< Multisampled images cannot be presented directly
 				};
 
 				auto colorAttachmentRef = VkAttachmentReference {
@@ -1439,7 +1449,7 @@ namespace crimild {
 				// Depth Attachment descriptor
 				auto depthAttachment = VkAttachmentDescription {
 					.format = findDepthFormat(),
-					.samples = VK_SAMPLE_COUNT_1_BIT,
+					.samples = m_msaaSamples,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 					.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 					.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -1453,6 +1463,24 @@ namespace crimild {
 					.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 				};
 
+				// Color Attachment Resolve (for multisampling)
+
+				auto colorAttachmentResolve = VkAttachmentDescription {
+					.format = m_swapChainImageFormat,
+					.samples = VK_SAMPLE_COUNT_1_BIT,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+				};
+
+				auto colorAttachmentResolveRef = VkAttachmentReference {
+					.attachment = 2,
+					.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				};
+
 				// Subpasses and attachment references
 
 				auto subpass = VkSubpassDescription {
@@ -1460,6 +1488,7 @@ namespace crimild {
 					.colorAttachmentCount = 1,
 					.pColorAttachments = &colorAttachmentRef,
 					.pDepthStencilAttachment = &depthAttachmentRef,
+					.pResolveAttachments = &colorAttachmentResolveRef,
 				};
 
 				// Subpass dependencies
@@ -1475,9 +1504,10 @@ namespace crimild {
 				
 				// Render Pass
 
-				auto attachments = std::array< VkAttachmentDescription, 2 > {
+				auto attachments = std::array< VkAttachmentDescription, 3 > {
 					colorAttachment,
 					depthAttachment,
+					colorAttachmentResolve,					
 				};
 
 				auto renderPassInfo = VkRenderPassCreateInfo {
@@ -1512,9 +1542,10 @@ namespace crimild {
 				m_swapChainFramebuffers.resize( m_swapChainImageViews.size() );
 
 				for ( auto i = 0l; i < m_swapChainImageViews.size(); ++i ) {
-					auto attachments = std::array< VkImageView, 2 > {
-						m_swapChainImageViews[ i ],
+					auto attachments = std::array< VkImageView, 3 > {
+						m_colorImageView,
 						m_depthImageView,
+						m_swapChainImageViews[ i ],
 					};
 					
 					auto framebufferInfo = VkFramebufferCreateInfo {
@@ -1722,7 +1753,7 @@ namespace crimild {
 				static auto startTime = std::chrono::high_resolution_clock::now();
 
 				auto currentTime = std::chrono::high_resolution_clock::now();
-				auto time = std::chrono::duration< float, std::chrono::seconds::period >( currentTime - startTime ).count();
+				auto time = ENABLE_ROTATION * std::chrono::duration< float, std::chrono::seconds::period >( currentTime - startTime ).count();
 
 				auto ubo = UniformBufferObject { };
 
@@ -2092,6 +2123,7 @@ namespace crimild {
 				uint32_t width,
 				uint32_t height,
 				uint32_t mipLevels,
+				VkSampleCountFlagBits numSamples,
 				VkFormat format,
 				VkImageTiling tiling,
 				VkImageUsageFlags usage,
@@ -2113,7 +2145,7 @@ namespace crimild {
 					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 					.usage = usage,
 					.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-					.samples = VK_SAMPLE_COUNT_1_BIT,
+					.samples = numSamples,
 					.flags = 0,
 				};
 
@@ -2173,6 +2205,7 @@ namespace crimild {
 					texWidth,
 					texHeight,
 					m_mipLevels,
+					VK_SAMPLE_COUNT_1_BIT,					
 					VK_FORMAT_R8G8B8A8_UNORM,
 					VK_IMAGE_TILING_OPTIMAL,
 					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -2392,6 +2425,12 @@ namespace crimild {
 					sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 					destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 				}
+				else if ( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ) {
+					barrier.srcAccessMask = 0;
+					barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+					sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+					destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+				}
 				else {
 					throw std::invalid_argument( "Unsupported layout transition" );
 				}
@@ -2534,6 +2573,77 @@ namespace crimild {
 					}
 				}
 			}
+
+			//@}
+
+			/**
+			   \name Multisampling
+			 */
+			//@{
+
+		private:
+			VkSampleCountFlagBits getMaxUsableSampleCount( void )
+			{
+				VkPhysicalDeviceProperties physicalDeviceProperties;
+				vkGetPhysicalDeviceProperties( m_physicalDevice, &physicalDeviceProperties );
+
+				auto counts = std::min(
+					physicalDeviceProperties.limits.framebufferColorSampleCounts,
+					physicalDeviceProperties.limits.framebufferDepthSampleCounts
+				);
+
+				if ( counts & VK_SAMPLE_COUNT_64_BIT ) return VK_SAMPLE_COUNT_64_BIT;
+				if ( counts & VK_SAMPLE_COUNT_32_BIT ) return VK_SAMPLE_COUNT_32_BIT;
+				if ( counts & VK_SAMPLE_COUNT_16_BIT ) return VK_SAMPLE_COUNT_16_BIT;
+				if ( counts & VK_SAMPLE_COUNT_8_BIT ) return VK_SAMPLE_COUNT_8_BIT;
+				if ( counts & VK_SAMPLE_COUNT_4_BIT ) return VK_SAMPLE_COUNT_4_BIT;
+				if ( counts & VK_SAMPLE_COUNT_2_BIT ) return VK_SAMPLE_COUNT_2_BIT;
+				return VK_SAMPLE_COUNT_1_BIT;
+			}
+
+			/**
+			   \brief Create a multisampled colored buffer
+
+			   \remarks Use only 1 mipmap level as enforced by Vulkan spec and it's not going to be used as a texture
+			 */
+			void createColorResources( void )
+			{
+				auto colorFormat = m_swapChainImageFormat;
+
+				createImage(
+					m_swapChainExtent.width,
+					m_swapChainExtent.height,
+					1,
+					m_msaaSamples,
+					colorFormat,
+					VK_IMAGE_TILING_OPTIMAL,
+					VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+					m_colorImage,
+					m_colorImageMemory
+				);
+
+				m_colorImageView = createImageView(
+					m_colorImage,
+					colorFormat,
+					VK_IMAGE_ASPECT_COLOR_BIT,
+					1
+				);
+
+				transitionImageLayout(
+					m_colorImage,
+					colorFormat,
+					VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					1
+				);
+			}
+
+		private:
+			VkSampleCountFlagBits m_msaaSamples = VK_SAMPLE_COUNT_1_BIT;
+			VkImage m_colorImage;
+			VkDeviceMemory m_colorImageMemory;
+			VkImageView m_colorImageView;
 
 			//@}
 
