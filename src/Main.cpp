@@ -28,6 +28,8 @@
 #include <Crimild.hpp>
 #include <Crimild_Vulkan.hpp>
 
+#if 0
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -36,10 +38,6 @@
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
-
-#if !defined( NDEBUG )
-#define CRIMILD_DEBUG true
-#endif
 
 #include <set>
 #include <fstream>
@@ -208,7 +206,7 @@ namespace crimild {
 				glfwInit();
                 glfwSetErrorCallback( errorCallback );
 				glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
-				glfwWindowHint( GLFW_RESIZABLE, GLFW_FALSE );
+				glfwWindowHint( GLFW_RESIZABLE, GLFW_TRUE );
 
 				_window = glfwCreateWindow( _width, _height, "Hello Vulkan!", nullptr, nullptr );
 
@@ -2713,14 +2711,98 @@ int main( int argc, char **argv )
 	return 0;
 }
 
+#else
 
-/*
+#include <Crimild_GLFW.hpp>
+
+using namespace crimild;
+using namespace crimild::glfw;
+using namespace crimild::vulkan;
+
+#if 0
+
+class Example : public Simulation {
+public:
+	Example( SharedPointer< Settings > const &settings )
+		: Simulation( settings )
+	{
+		settings->set( "crimild.simulation.name", "Hello Vulkan" );
+		settings->set( "crimild.simulation.platform", "GLFWL" );
+		settings->set( "crimild.simulation.renderer", "Vulkan" );
+	}
+	
+	void start( void ) override
+	{
+		Simulation::start();
+		
+		auto scene = []() {
+			return crimild::alloc< Group >();
+		};
+
+		setScene( scene );
+	}
+};
+
+CRIMILD_APP_MAIN_SECTION( Example )
+
+#endif
+
+class CustomSim : public GLSimulation {
+public:
+    void start( void ) override
+    {
+        addSystem( crimild::alloc< GLFWVulkanSystem >() );
+        Simulation::start();
+
+        setScene( []() {
+            return crimild::alloc< Group >();
+        }());
+    }
+};
+
 int main( int argc, char **argv )
 {
 	crimild::init();
-	
-    CRIMILD_SIMULATION_LIFETIME auto sim = crimild::alloc< sdl::SDLSimulation >( "Triangle", crimild::alloc< Settings >( argc, argv ) );
 
+	Log::setLevel( Log::Level::LOG_LEVEL_ALL );
+	
+    CRIMILD_SIMULATION_LIFETIME auto sim = crimild::alloc< GLSimulation >( "Hello Vulkan!", crimild::alloc< Settings >( argc, argv ) );
+	sim->addSystem( crimild::alloc< GLFWVulkanSystem >() );
+
+#if 0
+	// Scoped scene creation to ensure proper destruction
+	sim->setScene(
+		[]() {
+			auto scene = crimild::Group();
+
+			auto geometry = crimild::alloc< Geometry >();
+			scene->attachNode( geometry );
+
+			auto primitive = crimild::alloc< Primitive >();
+			geometry->attachPrimitive( primitive );
+
+			auto pipelineDescriptor = PipelineDescriptor {
+				.program = crimild::alloc< ShaderProgram >(
+					Array< SharedPointer< Shader >> {
+						crimild::alloc< Shader >(
+							Shader::Stage::VERTEX,
+							FileSystem::getInstance().readResourceFile( "assets/shaders/triangle.vert.spv" )
+						),
+						crimild::alloc< Shader >(
+							Shader::Stage::FRAGMENT,
+							FileSystem::getInstance().readResourceFile( "assets/shaders/triangle.frag.spv" )
+						),
+					}
+				),
+			);
+			primitive->setPipelineDescriptor( pipelineDescriptor );
+
+			return scene;
+		}()
+	);
+#endif
+
+	/*
     auto scene = crimild::alloc< Group >();
 
     float vertices[] = {
@@ -2752,8 +2834,10 @@ int main( int argc, char **argv )
     scene->attachNode( camera );
     
     sim->setScene( scene );
+	*/
 	return sim->run();
 }
-*/
+
+#endif
 
 
